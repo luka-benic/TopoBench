@@ -20,12 +20,14 @@ import os
 import subprocess
 import sys
 
-from generate_configs import ensure_config
+from generate_configs import configured_energy_method, ensure_config
 
 from topobench.data.utils.openqdc_utils import (
     PROJECT_ROOT,
     canonical_name,
     default_cache_dir,
+    method_names_for,
+    resolve_energy_method,
 )
 
 
@@ -39,7 +41,12 @@ def main() -> None:
         default="graph/gcn",
         help="TopoBench model config, e.g. graph/gcn, simplicial/scn, cell/cwn",
     )
-    p.add_argument("--energy-method", type=int, default=0)
+    p.add_argument(
+        "--energy-method",
+        default=None,
+        help="energy column, index or name; default: the one chosen in the "
+        "dataset yaml (loader.parameters.energy_method)",
+    )
     p.add_argument(
         "--target",
         default=None,
@@ -68,22 +75,31 @@ def main() -> None:
 
     name = canonical_name(args.dataset)
     os.environ["OPENQDC_CACHE_DIR"] = args.cache_dir
-    # Written with the chosen energy_method as the yaml default.
+    names = method_names_for(name)
+    method = None
+    if args.energy_method is not None:
+        method = resolve_energy_method(names, args.energy_method)
+    # A new yaml gets the chosen column; an existing yaml keeps its own.
     config = ensure_config(
         name,
         args.cache_dir,
         regenerate=args.regen_config,
-        energy_method=args.energy_method,
+        energy_method=method,
     )
     print(f"Using {config}")
+    column = method
+    if column is None:
+        column = resolve_energy_method(names, configured_energy_method(name))
+    print(f"Energy column {column}: {names[column]!r}")
 
     params = "dataset.loader.parameters"
     overrides = [
         f"dataset=graph/{config.stem}",
         f"model={args.model}",
         f"logger={args.logger}",
-        f"{params}.energy_method={args.energy_method}",
     ]
+    if method is not None:
+        overrides.append(f"{params}.energy_method={method}")
     for key, value in [
         (f"{params}.target", args.target),
         (f"{params}.max_samples", args.max_samples),

@@ -17,7 +17,7 @@ class OpenQDCDatasetLoader(AbstractLoader):
             - data_name: OpenQDC class name (e.g. "Alchemy")
             - openqdc_cache_dir: Where OpenQDC downloads its arrays
             - atom_types: Atomic numbers used for the one-hot node features
-            - target, energy_method, energy_unit, edge_method, bond_scale,
+            - target, energy_method, baseline, edge_method, bond_scale,
               cutoff, max_samples, subsample_seed: see ``OpenQDCDataset``.
     """
 

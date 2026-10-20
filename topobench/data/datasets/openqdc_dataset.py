@@ -12,12 +12,15 @@ from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.io import fs
 from tqdm import tqdm
 
-from topobench.data.utils.openqdc_utils import OpenQDCSource
+from topobench.data.utils.openqdc_utils import (
+    OpenQDCSource,
+    resolve_energy_method,
+)
 
 log = logging.getLogger(__name__)
 
 # Bump when the conversion changes so stale processed files are not reused.
-PROCESSING_VERSION = 2
+PROCESSING_VERSION = 3
 
 
 class OpenQDCDataset(InMemoryDataset):
@@ -30,13 +33,13 @@ class OpenQDCDataset(InMemoryDataset):
     - ``z``: atomic numbers,
     - ``edge_index``: covalent bonds inferred from interatomic distances
       (``edge_method="bonds"``) or all pairs within ``cutoff`` (``"radius"``),
-    - ``energy``: the selected energy (``energy_unit``),
+    - ``energy``: the selected energy in eV, as returned by OpenQDC,
     - ``y``: the regression target, i.e. ``energy`` minus a per-element
       linear baseline when ``baseline="per_element"``, else ``energy``.
 
-    Forces are never loaded. OpenQDC energies are read through
-    :class:`~topobench.data.utils.openqdc_utils.OpenQDCSource`, which corrects
-    wrong unit labels.
+    Forces are never loaded. Energies (eV) and positions (Angstrom) are the
+    values OpenQDC returns for ``energy_unit="ev"``, ``distance_unit="ang"``
+    (see :class:`~topobench.data.utils.openqdc_utils.OpenQDCSource`).
 
     Parameters
     ----------
@@ -46,9 +49,8 @@ class OpenQDCDataset(InMemoryDataset):
         OpenQDC class name, e.g. ``"QM9"``.
     parameters : DictConfig
         Loader parameters: ``openqdc_cache_dir``, ``atom_types``, ``target``,
-        ``energy_method``, ``energy_unit``, ``stored_energy_unit``,
-        ``stored_distance_unit``, ``baseline``, ``edge_method``,
-        ``bond_scale``, ``cutoff``, ``max_samples``, ``subsample_seed``.
+        ``energy_method``, ``baseline``, ``edge_method``, ``bond_scale``,
+        ``cutoff``, ``max_samples``, ``subsample_seed``.
     """
 
     TARGETS = (
@@ -62,14 +64,25 @@ class OpenQDCDataset(InMemoryDataset):
         self.parameters = parameters
 
         def opt(key, default=None):
+            """Read an optional loader parameter.
+
+            Parameters
+            ----------
+            key : str
+                Parameter name.
+            default : Any
+                Value used when the parameter is missing.
+
+            Returns
+            -------
+            Any
+                The configured value or ``default``.
+            """
             return OmegaConf.select(parameters, key, default=default)
 
         self.atom_types = [int(z) for z in parameters.atom_types]
         self.target = opt("target", "formation_energies")
         self.energy_method = opt("energy_method", 0)
-        self.energy_unit = opt("energy_unit", "ev")
-        self.stored_energy_unit = opt("stored_energy_unit")
-        self.stored_distance_unit = opt("stored_distance_unit")
         self.baseline = opt("baseline", "per_element")
         self.edge_method = opt("edge_method", "bonds")
         self.bond_scale = float(opt("bond_scale", 1.3))
@@ -124,9 +137,6 @@ class OpenQDCDataset(InMemoryDataset):
                 f"v{PROCESSING_VERSION}",
                 self.target,
                 f"m{self.energy_method}",
-                self.energy_unit.replace("/", "per"),
-                f"su{str(self.stored_energy_unit).replace('/', 'per')}",
-                f"sd{self.stored_distance_unit}",
                 f"b{self.baseline}",
                 edges,
                 f"n{self.max_samples if self.max_samples is not None else 'all'}",
@@ -187,32 +197,16 @@ class OpenQDCDataset(InMemoryDataset):
 
     def process(self) -> None:
         """Convert the OpenQDC conformers to PyG graphs and save them."""
-        method = self.energy_method
-        src = OpenQDCSource(
-            self.name,
-            self.raw_dir,
-            energy_unit=self.energy_unit,
-            distance_unit="ang",
-            stored_energy_unit=self.stored_energy_unit,
-            stored_distance_unit=self.stored_distance_unit,
-            energy_method=method if isinstance(method, int) else 0,
-        )
-        if not isinstance(method, int):
-            from topobench.data.utils.openqdc_utils import (
-                resolve_energy_method,
-            )
-
-            method = resolve_energy_method(src.method_names, method)
-        if not 0 <= method < src.n_methods:
-            raise ValueError(
-                f"energy_method must be in [0, {src.n_methods - 1}] "
-                f"for {self.name}."
-            )
-        if src.energy_kind == "not_total" and self.baseline != "none":
+        src = OpenQDCSource(self.name, self.raw_dir)
+        names = src.method_names
+        method = resolve_energy_method(names, self.energy_method)
+        log.info("%s: energy column %d = %r", self.name, method, names[method])
+        if src.not_total_reason and self.baseline != "none":
             log.warning(
-                "%s energies are not total energies; baseline=per_element is "
-                "meaningless here (use baseline: none).",
+                "%s energies are not total energies (%s); baseline=per_element "
+                "is meaningless here (use baseline: none).",
                 self.name,
+                src.not_total_reason,
             )
 
         idxs = np.arange(len(src))
@@ -277,12 +271,10 @@ class OpenQDCDataset(InMemoryDataset):
         with open(osp.join(self.processed_root, "baseline.json"), "w") as f:
             json.dump(
                 {
-                    "unit": self.energy_unit,
+                    "unit": "ev",
                     "baseline": self.baseline,
                     "atom_types": self.atom_types,
                     "e0": e0.tolist(),
-                    "stored_energy_unit": src.stored_energy_unit,
-                    "stored_distance_unit": src.stored_distance_unit,
                     "n_molecules": len(data_list),
                 },
                 f,

@@ -2,8 +2,8 @@
 
 Works for every OpenQDC potential-energy dataset. Each frame stores positions
 (Angstrom), atomic numbers, ``pbc=F`` and one energy (eV) in
-``info["REF_energy"]``; no forces are written. Wrong OpenQDC unit labels are
-corrected (see ``topobench/data/utils/openqdc_utils.py``).
+``info["REF_energy"]``; no forces are written. Energies and positions are the
+values OpenQDC returns for ``energy_unit="ev"`` and ``distance_unit="ang"``.
 
 Example
 -------
@@ -23,6 +23,7 @@ import os
 import numpy as np
 from ase import Atoms
 from ase.io import write
+from generate_configs import configured_energy_method
 from tqdm import tqdm
 
 from topobench.data.datasets.openqdc_dataset import PROCESSING_VERSION
@@ -31,6 +32,8 @@ from topobench.data.utils.openqdc_utils import (
     OpenQDCSource,
     canonical_name,
     default_cache_dir,
+    method_names_for,
+    resolve_energy_method,
 )
 
 log = logging.getLogger(__name__)
@@ -55,19 +58,9 @@ def add_data_args(p: argparse.ArgumentParser) -> None:
     )
     p.add_argument(
         "--energy-method",
-        type=int,
-        default=0,
-        help="energy column (the generated TopoBench yaml lists the names)",
-    )
-    p.add_argument(
-        "--stored-energy-unit",
         default=None,
-        help="override the detected true unit of the stored energies",
-    )
-    p.add_argument(
-        "--stored-distance-unit",
-        default="auto",
-        help="true unit of the stored positions ('auto' detects it)",
+        help="energy column, index or name; default: the one chosen in the "
+        "dataset yaml (loader.parameters.energy_method), else 0",
     )
     p.add_argument("--max-samples", type=int, default=None)
     p.add_argument("--subsample-seed", type=int, default=0)
@@ -82,18 +75,29 @@ def add_data_args(p: argparse.ArgumentParser) -> None:
     )
 
 
+def resolve_energy_arg(args: argparse.Namespace) -> argparse.Namespace:
+    """Turn ``--energy-method`` (index, name or None) into a column index.
+
+    None means the column chosen in the dataset yaml, or 0 if there is none.
+    """
+    spec = args.energy_method
+    if spec is None:
+        spec = configured_energy_method(args.dataset)
+    args.energy_method = resolve_energy_method(
+        method_names_for(args.dataset), 0 if spec is None else spec
+    )
+    return args
+
+
 def xyz_dir(args: argparse.Namespace) -> str:
     """Directory holding the XYZ files for these export settings."""
     n = args.max_samples if args.max_samples is not None else "all"
-    su = str(args.stored_energy_unit).replace("/", "per")
     name = "_".join(
         [
             f"v{PROCESSING_VERSION}",
             canonical_name(args.dataset),
             args.target,
             f"m{args.energy_method}",
-            f"su{su}",
-            f"sd{args.stored_distance_unit}",
             f"n{n}",
             f"s{args.subsample_seed}",
         ]
@@ -118,30 +122,21 @@ def export(args: argparse.Namespace) -> dict[str, str]:
     dict[str, str]
         Paths of the train/valid/test XYZ files.
     """
-    src = OpenQDCSource(
-        args.dataset,
-        args.cache_dir,
-        energy_unit="ev",
-        distance_unit="ang",
-        stored_energy_unit=args.stored_energy_unit,
-        stored_distance_unit=args.stored_distance_unit,
-        energy_method=args.energy_method,
-    )
+    src = OpenQDCSource(args.dataset, args.cache_dir)
     if not 0 <= args.energy_method < src.n_methods:
         raise ValueError(
             f"--energy-method must be in [0, {src.n_methods - 1}] "
             f"for {src.name}: {src.method_names}"
         )
-    if src.energy_kind == "not_total" and not args.allow_non_total:
+    if src.not_total_reason and not args.allow_non_total:
         raise SystemExit(
-            f"{src.name} energies are not total energies; MACE learns total "
-            "energies. Use --allow-non-total to export anyway."
+            f"{src.name} energies are not total energies "
+            f"({src.not_total_reason}); MACE learns total energies. "
+            "Use --allow-non-total to export anyway."
         )
     print(
         f"{src.name}: method {args.energy_method} = "
-        f"{src.method_names[args.energy_method]!r}, stored energy unit "
-        f"{src.stored_energy_unit} ({src.energy_kind}), stored distance "
-        f"unit {src.stored_distance_unit}"
+        f"{src.method_names[args.energy_method]!r} (eV, Angstrom)"
     )
 
     idxs = np.arange(len(src))
@@ -184,8 +179,6 @@ def export(args: argparse.Namespace) -> dict[str, str]:
         json.dump(
             {
                 **vars(args),
-                "resolved_stored_energy_unit": src.stored_energy_unit,
-                "resolved_stored_distance_unit": src.stored_distance_unit,
                 "method_name": src.method_names[args.energy_method],
             },
             f,
@@ -198,7 +191,7 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     add_data_args(p)
     p.add_argument("--overwrite", action="store_true")
-    args = p.parse_args()
+    args = resolve_energy_arg(p.parse_args())
     paths = xyz_paths(args)
     if not args.overwrite and all(os.path.exists(f) for f in paths.values()):
         print(f"XYZ files already exist in {xyz_dir(args)} (use --overwrite).")

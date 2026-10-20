@@ -23,7 +23,13 @@ import subprocess
 import sys
 
 import torch
-from export_xyz import ENERGY_KEY, add_data_args, export, xyz_paths
+from export_xyz import (
+    ENERGY_KEY,
+    add_data_args,
+    export,
+    resolve_energy_arg,
+    xyz_paths,
+)
 
 
 def parse_args() -> tuple[argparse.Namespace, list[str]]:
@@ -59,6 +65,7 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
 def main() -> None:
     args, extra = parse_args()
     extra = [a for a in extra if a != "--"]
+    args = resolve_energy_arg(args)
 
     paths = xyz_paths(args)
     if not all(os.path.exists(f) for f in paths.values()):
