@@ -17,6 +17,8 @@ Any extra ``mace_run_train`` flag is passed through unchanged, e.g.::
 """
 
 import argparse
+import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -26,10 +28,10 @@ import torch
 from export_xyz import (
     ENERGY_KEY,
     add_data_args,
-    export,
+    ensure_export,
     resolve_energy_arg,
-    xyz_paths,
 )
+from filelock import FileLock, Timeout
 
 
 def parse_args() -> tuple[argparse.Namespace, list[str]]:
@@ -67,15 +69,32 @@ def main() -> None:
     extra = [a for a in extra if a != "--"]
     args = resolve_energy_arg(args)
 
-    paths = xyz_paths(args)
-    if not all(os.path.exists(f) for f in paths.values()):
-        paths = export(args)
-    else:
-        print(f"Using existing XYZ files: {paths}")
+    paths = ensure_export(args)
 
-    # Default run name: "<export settings>_<split settings>" from the XYZ directory.
+    # Default run name: data settings (from the XYZ directory) plus a short hash
+    # of the model/training settings, so runs that differ only in those never
+    # share a folder.
     data_dir, split_dir = os.path.split(os.path.dirname(paths["train"]))
-    name = args.name or f"{os.path.basename(data_dir)}_{split_dir}"
+    keys = [
+        "r_max",
+        "hidden_irreps",
+        "max_ell",
+        "correlation",
+        "num_interactions",
+        "epochs",
+        "batch_size",
+        "valid_batch_size",
+        "lr",
+        "patience",
+        "dtype",
+        "seed",
+        "error_table",
+    ]
+    settings = json.dumps(
+        [{k: getattr(args, k) for k in keys}, extra], sort_keys=True
+    )
+    digest = hashlib.sha1(settings.encode()).hexdigest()[:8]
+    name = args.name or f"{os.path.basename(data_dir)}_{split_dir}_{digest}"
     work_dir = os.path.join(args.work_dir, name)
 
     mace_run_train = shutil.which("mace_run_train") or os.path.join(
@@ -121,7 +140,20 @@ def main() -> None:
         *extra,
     ]
     print(" \\\n  ".join(cmd))
-    subprocess.run(cmd, check=True)
+    os.makedirs(work_dir, exist_ok=True)
+    # Refuse to start if another run is using this folder right now.
+    lock = FileLock(os.path.join(work_dir, "run.lock"), timeout=0)
+    try:
+        lock.acquire()
+    except Timeout:
+        sys.exit(
+            f"Another run is already using {work_dir}. "
+            "Give this run its own --name."
+        )
+    try:
+        subprocess.run(cmd, check=True)
+    finally:
+        lock.release()
     print(f"Results, checkpoints and logs in {work_dir}")
 
 

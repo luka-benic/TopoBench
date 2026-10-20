@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import os.path as osp
 
 import numpy as np
@@ -14,6 +15,7 @@ from tqdm import tqdm
 
 from topobench.data.utils.openqdc_utils import (
     OpenQDCSource,
+    locked,
     resolve_energy_method,
 )
 
@@ -95,7 +97,15 @@ class OpenQDCDataset(InMemoryDataset):
             raise ValueError("edge_method must be 'bonds' or 'radius'.")
         if self.baseline not in ("per_element", "none"):
             raise ValueError("baseline must be 'per_element' or 'none'.")
-        super().__init__(root)
+        processed_root = osp.join(root, name, self._tag())
+        os.makedirs(processed_root, exist_ok=True)
+        # Convert once: jobs started together wait here, then find data.pt.
+        self.was_processed = False  # set by process() if it had to run
+        with locked(
+            osp.join(processed_root, "convert.lock"),
+            f"{name} graphs (conversion)",
+        ):
+            super().__init__(root)
 
         out = fs.torch_load(self.processed_paths[0])
         data, self.slices, self.sizes, data_cls = out
@@ -118,21 +128,20 @@ class OpenQDCDataset(InMemoryDataset):
         """
         return str(self.parameters.openqdc_cache_dir)
 
-    @property
-    def processed_dir(self) -> str:
-        """Return a processed directory unique to the conversion settings.
+    def _tag(self) -> str:
+        """Return a folder name unique to the conversion settings.
 
         Returns
         -------
         str
-            Path to the processed directory.
+            The folder name.
         """
         edges = (
             f"bonds{self.bond_scale}"
             if self.edge_method == "bonds"
             else f"radius{self.cutoff}"
         )
-        tag = "_".join(
+        return "_".join(
             [
                 f"v{PROCESSING_VERSION}",
                 self.target,
@@ -143,7 +152,17 @@ class OpenQDCDataset(InMemoryDataset):
                 f"s{self.subsample_seed}",
             ]
         )
-        self.processed_root = osp.join(self.root, self.name, tag)
+
+    @property
+    def processed_dir(self) -> str:
+        """Return a processed directory unique to the conversion settings.
+
+        Returns
+        -------
+        str
+            Path to the processed directory.
+        """
+        self.processed_root = osp.join(self.root, self.name, self._tag())
         return osp.join(self.processed_root, "processed")
 
     @property
@@ -197,6 +216,7 @@ class OpenQDCDataset(InMemoryDataset):
 
     def process(self) -> None:
         """Convert the OpenQDC conformers to PyG graphs and save them."""
+        self.was_processed = True
         src = OpenQDCSource(self.name, self.raw_dir)
         names = src.method_names
         method = resolve_energy_method(names, self.energy_method)

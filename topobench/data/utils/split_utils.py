@@ -4,6 +4,7 @@ import os
 
 import numpy as np
 import torch
+from filelock import FileLock
 from sklearn.model_selection import StratifiedKFold, train_test_split
 
 from topobench.dataloader import DataloadDataset
@@ -212,38 +213,40 @@ def random_splitting(labels, parameters, root=None, global_data_seed=42):
     split_dir = os.path.join(
         data_dir, f"train_prop={train_prop}_global_seed={global_data_seed}"
     )
-    generate_splits = False
-    if not os.path.isdir(split_dir):
-        os.makedirs(split_dir)
-        generate_splits = True
+    # Create the splits under a lock, in a temporary directory that is renamed
+    # when complete, so processes started together never read half-written
+    # splits.
+    os.makedirs(data_dir, exist_ok=True)
+    with FileLock(split_dir + ".lock"):
+        if not os.path.isdir(split_dir):
+            tmp_dir = split_dir + ".tmp"
+            os.makedirs(tmp_dir, exist_ok=True)
+            # Set initial seed
+            torch.manual_seed(global_data_seed)
+            np.random.seed(global_data_seed)
+            # Generate a split
+            n = len(labels)
+            train_num = int(n * train_prop)
+            valid_num = int(n * valid_prop)
 
-    # Generate splits if they do not exist
-    if generate_splits:
-        # Set initial seed
-        torch.manual_seed(global_data_seed)
-        np.random.seed(global_data_seed)
-        # Generate a split
-        n = len(labels)
-        train_num = int(n * train_prop)
-        valid_num = int(n * valid_prop)
+            # Generate 10 splits
+            for fold_n in range(10):
+                # Permute indices
+                perm = torch.as_tensor(np.random.permutation(n))
 
-        # Generate 10 splits
-        for fold_n in range(10):
-            # Permute indices
-            perm = torch.as_tensor(np.random.permutation(n))
+                train_indices = perm[:train_num]
+                val_indices = perm[train_num : train_num + valid_num]
+                test_indices = perm[train_num + valid_num :]
+                split_idx = {
+                    "train": train_indices,
+                    "valid": val_indices,
+                    "test": test_indices,
+                }
 
-            train_indices = perm[:train_num]
-            val_indices = perm[train_num : train_num + valid_num]
-            test_indices = perm[train_num + valid_num :]
-            split_idx = {
-                "train": train_indices,
-                "valid": val_indices,
-                "test": test_indices,
-            }
-
-            # Save generated split
-            split_path = os.path.join(split_dir, f"{fold_n}.npz")
-            np.savez(split_path, **split_idx)
+                # Save generated split
+                split_path = os.path.join(tmp_dir, f"{fold_n}.npz")
+                np.savez(split_path, **split_idx)
+            os.replace(tmp_dir, split_dir)
 
     # Load the split
     split_path = os.path.join(split_dir, f"{fold}.npz")

@@ -21,6 +21,7 @@ import subprocess
 import sys
 
 from generate_configs import configured_energy_method, ensure_config
+from prepare_data import parse_loader_params, prepare_topobench
 
 from topobench.data.utils.openqdc_utils import (
     PROJECT_ROOT,
@@ -91,6 +92,18 @@ def main() -> None:
     if column is None:
         column = resolve_energy_method(names, configured_energy_method(name))
     print(f"Energy column {column}: {names[column]!r}")
+
+    # Check that the dataset is downloaded and preprocessed for exactly these
+    # settings, and do whatever is missing, before training starts.
+    loader_overrides = parse_loader_params(extra)
+    loader_overrides.update(
+        {
+            "target": args.target,
+            "max_samples": args.max_samples,
+            "subsample_seed": args.subsample_seed,
+        }
+    )
+    prepare_topobench(name, args.cache_dir, method, loader_overrides)
 
     params = "dataset.loader.parameters"
     overrides = [

@@ -27,7 +27,17 @@
 # Optional environment variables:
 #   ENERGY_METHOD=<index or name>   energy column to train on (see above)
 #   THREADS=<n>          CPU threads (default: 1 on a GPU run, 8 on a CPU run)
+#   MIN_FREE_MB=<n>      warn if the chosen GPU has less free memory (default 4000)
 #   OPENQDC_CACHE_DIR    where OpenQDC data is stored (default: <repo>/datasets/openqdc)
+#
+# Before training, the dataset is checked and anything missing is done first:
+# download the OpenQDC data, then preprocess it (TopoBench graphs or MACE .xyz
+# files). The same step is available alone: scripts/openqdc/prepare_data.py.
+#
+# Several jobs can run at once (different GPUs, models or energy columns): data
+# conversion, downloads, splits and .xyz export are protected by file locks.
+# MACE runs get a default name from their data and settings; two runs with
+# identical settings refuse to share a folder (use --name for the second one).
 #
 # Run in the background with:  nohup ./sub_openqdc.sh mace 1 --dataset QM9 > run.log 2>&1 &
 
@@ -77,6 +87,12 @@ elif [[ "$DEVICE" =~ ^[0-9]+$ ]]; then
     echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
     if command -v nvidia-smi > /dev/null; then
         nvidia-smi -i "$DEVICE" --query-gpu=name,memory.used,memory.total --format=csv,noheader || true
+        FREE_MB=$(nvidia-smi -i "$DEVICE" --query-gpu=memory.free --format=csv,noheader,nounits 2> /dev/null | head -1 | tr -d ' ' || true)
+        MIN_FREE_MB="${MIN_FREE_MB:-4000}"
+        if [[ "$FREE_MB" =~ ^[0-9]+$ ]] && [ "$FREE_MB" -lt "$MIN_FREE_MB" ]; then
+            echo "WARNING: GPU $DEVICE has only $FREE_MB MiB free (less than $MIN_FREE_MB MiB), so the job may run out of memory."
+            echo "         Pick a less used GPU (see nvidia-smi) or set MIN_FREE_MB to silence this warning."
+        fi
     fi
 else
     echo "Device must be one GPU number (e.g. 1) or 'cpu', got '$DEVICE'."

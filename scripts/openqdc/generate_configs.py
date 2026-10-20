@@ -19,6 +19,7 @@ Examples
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 import yaml
@@ -31,6 +32,7 @@ from topobench.data.utils.openqdc_utils import (
     canonical_name,
     default_cache_dir,
     inspect_dataset,
+    locked,
     resolve_energy_method,
 )
 
@@ -198,7 +200,11 @@ def write_config(
     )
     path = config_path(name, out_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render(info, energy_method))
+    # Write to a temporary file and rename it, so a reader never sees a
+    # half-written yaml.
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(render(info, energy_method))
+    os.replace(tmp, path)
     return path, info
 
 
@@ -216,9 +222,13 @@ def ensure_config(
             f"{canonical_name(name)} is unusable: {UNUSABLE[canonical_name(name)]}."
         )
     path = config_path(name)
-    stale = path.exists() and "NOT DOWNLOADED" in path.read_text()
-    if regenerate or stale or not path.exists():
-        path, _ = write_config(name, cache_dir, download=True, **kwargs)
+    Path(cache_dir).mkdir(parents=True, exist_ok=True)
+    # One process at a time writes a config; the others wait and then see it.
+    lock = Path(cache_dir) / f".{canonical_name(name)}.config.lock"
+    with locked(str(lock), f"{canonical_name(name)} config"):
+        stale = path.exists() and "NOT DOWNLOADED" in path.read_text()
+        if regenerate or stale or not path.exists():
+            path, _ = write_config(name, cache_dir, download=True, **kwargs)
     return path
 
 

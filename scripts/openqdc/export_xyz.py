@@ -32,6 +32,8 @@ from topobench.data.utils.openqdc_utils import (
     OpenQDCSource,
     canonical_name,
     default_cache_dir,
+    is_cached,
+    locked,
     method_names_for,
     resolve_energy_method,
 )
@@ -109,6 +111,41 @@ def xyz_dir(args: argparse.Namespace) -> str:
     )
 
 
+def export_marker(args: argparse.Namespace) -> str:
+    """Path of the file written last by an export (it marks it as complete)."""
+    return os.path.join(xyz_dir(args), "export_args.json")
+
+
+def ensure_export(args: argparse.Namespace) -> dict[str, str]:
+    """Return the XYZ paths, exporting first if no complete export exists.
+
+    The export runs under a lock, so jobs started together wait for one
+    export instead of writing the same files at the same time.
+
+    Returns
+    -------
+    dict[str, str]
+        Paths of the train/valid/test XYZ files.
+    """
+    os.makedirs(xyz_dir(args), exist_ok=True)
+    with locked(os.path.join(xyz_dir(args), "export.lock"), "XYZ export"):
+        if os.path.exists(export_marker(args)):
+            print(f"[prepare] {args.dataset}: XYZ files already exported.")
+        else:
+            downloaded = is_cached(args.dataset, args.cache_dir)
+            print(
+                f"[prepare] {args.dataset}: OpenQDC data "
+                + (
+                    "already downloaded."
+                    if downloaded
+                    else "not found locally, downloading ..."
+                )
+                + " Exporting XYZ files ..."
+            )
+            export(args)
+    return xyz_paths(args)
+
+
 def xyz_paths(args: argparse.Namespace) -> dict[str, str]:
     """Paths of the train/valid/test XYZ files."""
     return {s: os.path.join(xyz_dir(args), f"{s}.xyz") for s in SPLITS}
@@ -175,7 +212,7 @@ def export(args: argparse.Namespace) -> dict[str, str]:
     for split, idx in split_idx.items():
         write(paths[split], [frames[j] for j in idx], format="extxyz")
         print(f"{split}: {len(idx)} frames -> {paths[split]}")
-    with open(os.path.join(xyz_dir(args), "export_args.json"), "w") as f:
+    with open(export_marker(args), "w") as f:
         json.dump(
             {
                 **vars(args),
@@ -192,11 +229,12 @@ def main() -> None:
     add_data_args(p)
     p.add_argument("--overwrite", action="store_true")
     args = resolve_energy_arg(p.parse_args())
-    paths = xyz_paths(args)
-    if not args.overwrite and all(os.path.exists(f) for f in paths.values()):
+    if args.overwrite and os.path.exists(export_marker(args)):
+        os.remove(export_marker(args))
+    existed = os.path.exists(export_marker(args))
+    ensure_export(args)
+    if existed:
         print(f"XYZ files already exist in {xyz_dir(args)} (use --overwrite).")
-        return
-    export(args)
 
 
 if __name__ == "__main__":
