@@ -23,6 +23,7 @@ import os
 import shutil
 import subprocess
 import sys
+import uuid
 
 import torch
 from export_xyz import (
@@ -32,6 +33,12 @@ from export_xyz import (
     resolve_energy_arg,
 )
 from filelock import FileLock, Timeout
+from mace_test_results import (
+    log_mace_results_to_wandb,
+    save_mace_test_results,
+)
+
+from topobench.data.utils.openqdc_utils import canonical_name
 
 
 def parse_args() -> tuple[argparse.Namespace, list[str]]:
@@ -58,9 +65,50 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
         "--device", default="cuda" if torch.cuda.is_available() else "cpu"
     )
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--error-table", default="TotalMAE")
+    # Metrics: the loss that is minimised (MACE also picks the best checkpoint
+    # by the validation loss) and the error table printed during/after training.
+    p.add_argument(
+        "--loss",
+        default="weighted",
+        choices=["weighted", "huber", "l1l2energyforces"],
+        help="energy loss: weighted = mean squared error of the per-atom "
+        "energy, huber = Huber loss (see --huber-delta), l1l2energyforces = "
+        "mean absolute error of the per-atom energy",
+    )
+    p.add_argument("--huber-delta", type=float, default=0.01)
+    p.add_argument(
+        "--error-table",
+        default="TotalMAE",
+        choices=["TotalMAE", "PerAtomMAE", "TotalRMSE", "PerAtomRMSE"],
+        help="metric shown in the validation log lines and the final tables",
+    )
+    # Weights & Biases (login once with `wandb login`, or set WANDB_API_KEY;
+    # WANDB_MODE=offline logs to disk without network).
+    p.add_argument(
+        "--wandb", action="store_true", help="log the run to Weights & Biases"
+    )
+    p.add_argument(
+        "--wandb-project",
+        default=os.environ.get("WANDB_PROJECT", "openqdc"),
+        help="project (default: $WANDB_PROJECT, else openqdc)",
+    )
+    p.add_argument(
+        "--wandb-entity",
+        default=os.environ.get("WANDB_ENTITY", ""),
+        help="team or user (default: $WANDB_ENTITY, else your default)",
+    )
+    p.add_argument("--wandb-group", default=None)
+    p.add_argument("--wandb-tags", nargs="+", default=None)
+    p.add_argument(
+        "--wandb-name", default=None, help="run name; default: the run name"
+    )
     p.add_argument("--work-dir", default="logs/mace_openqdc")
     p.add_argument("--name", default=None, help="run name (default: derived)")
+    p.add_argument(
+        "--no-test-results",
+        action="store_true",
+        help="do not save the test-set predictions (.txt) and parity plot",
+    )
     return p.parse_known_args()
 
 
@@ -89,6 +137,8 @@ def main() -> None:
         "dtype",
         "seed",
         "error_table",
+        "loss",
+        "huber_delta",
     ]
     settings = json.dumps(
         [{k: getattr(args, k) for k in keys}, extra], sort_keys=True
@@ -115,7 +165,7 @@ def main() -> None:
         "--E0s=average",  # per-element reference energies fitted on train
         # MACE has no energy-only loss: forces are predicted but get zero weight
         # (frames without REF_forces also get config forces_weight=0).
-        "--loss=weighted",
+        f"--loss={args.loss}",
         "--energy_weight=1.0",
         "--forces_weight=0.0",
         "--stage_two_forces_weight=0.0",
@@ -137,8 +187,49 @@ def main() -> None:
         "--amsgrad",
         "--ema",
         "--ema_decay=0.99",
-        *extra,
     ]
+    if args.loss == "huber":
+        cmd.append(f"--huber_delta={args.huber_delta}")
+    env = dict(os.environ)
+    wandb_run_id = None
+    if args.wandb:
+        # The run id is fixed here so the test-set results can be added to the
+        # same Weights & Biases run after mace_run_train has finished.
+        wandb_run_id = uuid.uuid4().hex[:8]
+        env["WANDB_RUN_ID"] = wandb_run_id
+        env["WANDB_RESUME"] = "allow"
+        # mace_run_train has no group/tag options; wandb reads these variables.
+        if args.wandb_group:
+            env["WANDB_RUN_GROUP"] = args.wandb_group
+        tags = args.wandb_tags or [canonical_name(args.dataset), "MACE"]
+        env["WANDB_TAGS"] = ",".join(tags)
+        cmd += [
+            "--wandb",
+            f"--wandb_project={args.wandb_project}",
+            f"--wandb_entity={args.wandb_entity}",
+            f"--wandb_name={args.wandb_name or name}",
+            f"--wandb_dir={os.path.abspath(work_dir)}",
+            "--wandb_log_hypers",
+            *[
+                "hidden_irreps",
+                "r_max",
+                "max_ell",
+                "correlation",
+                "num_interactions",
+                "lr",
+                "batch_size",
+                "max_num_epochs",
+                "loss",
+                "huber_delta",
+                "seed",
+            ],
+        ]
+    cmd += extra
+    if args.wandb:
+        # mace_run_train crashes when logging forces-less data to W&B; the
+        # launcher fixes that (see run_mace_train.py).
+        launcher = os.path.join(os.path.dirname(__file__), "run_mace_train.py")
+        cmd[0:1] = [sys.executable, launcher]
     print(" \\\n  ".join(cmd))
     os.makedirs(work_dir, exist_ok=True)
     # Refuse to start if another run is using this folder right now.
@@ -151,10 +242,36 @@ def main() -> None:
             "Give this run its own --name."
         )
     try:
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, env=env)
     finally:
         lock.release()
     print(f"Results, checkpoints and logs in {work_dir}")
+    if not args.no_test_results:
+        # Predictions of the best model on test.xyz: .txt files + parity plot.
+        saved = save_mace_test_results(
+            work_dir,
+            name,
+            paths["test"],
+            canonical_name(args.dataset),
+            args.energy_method,
+            args.device,
+            args.valid_batch_size,
+            check_table=args.error_table == "TotalMAE",
+        )
+        if args.wandb:
+            log_mace_results_to_wandb(
+                saved,
+                wandb_run_id,
+                args.wandb_project,
+                args.wandb_entity,
+                os.path.abspath(work_dir),
+                {
+                    "dataset": canonical_name(args.dataset),
+                    "energy_method": args.energy_method,
+                    "max_samples": args.max_samples,
+                    "target": args.target,
+                },
+            )
 
 
 if __name__ == "__main__":

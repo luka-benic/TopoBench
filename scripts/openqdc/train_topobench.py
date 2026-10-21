@@ -21,6 +21,7 @@ import subprocess
 import sys
 
 from generate_configs import configured_energy_method, ensure_config
+from omegaconf import OmegaConf
 from prepare_data import parse_loader_params, prepare_topobench
 
 from topobench.data.utils.openqdc_utils import (
@@ -30,6 +31,8 @@ from topobench.data.utils.openqdc_utils import (
     method_names_for,
     resolve_energy_method,
 )
+
+PER_ATOM = "per_atom_formation_energies"
 
 
 def main() -> None:
@@ -65,7 +68,56 @@ def main() -> None:
     p.add_argument(
         "--logger", default="csv", help="csv, wandb, tensorboard, ..."
     )
+    # Metrics: which loss is minimised, which metric picks the best checkpoint
+    # (and stops training early), and which metrics are reported.
+    p.add_argument(
+        "--loss",
+        choices=["mse", "mae"],
+        default=None,
+        help="training loss; default: loss_type of the dataset yaml (mse)",
+    )
+    p.add_argument(
+        "--monitor-metric",
+        choices=["mae", "mse", "rmse"],
+        default=None,
+        help="validation metric that selects the best checkpoint and stops "
+        "training early; default: monitor_metric of the yaml (mae)",
+    )
+    p.add_argument(
+        "--metrics",
+        nargs="+",
+        choices=["mae", "mse", "rmse", "r2"],
+        default=None,
+        help="metrics reported for validation and test; default: mae mse",
+    )
+    # Weights & Biases (login once with `wandb login`, or set WANDB_API_KEY;
+    # WANDB_MODE=offline logs to disk without network).
+    p.add_argument(
+        "--wandb",
+        action="store_true",
+        help="log the run to Weights & Biases (same as --logger wandb)",
+    )
+    p.add_argument(
+        "--wandb-project",
+        default=os.environ.get("WANDB_PROJECT", "openqdc"),
+        help="project (default: $WANDB_PROJECT, else openqdc)",
+    )
+    p.add_argument(
+        "--wandb-entity",
+        default=os.environ.get("WANDB_ENTITY"),
+        help="team or user (default: $WANDB_ENTITY, else your default)",
+    )
+    p.add_argument(
+        "--wandb-name", default=None, help="run name; default: derived"
+    )
+    p.add_argument("--wandb-group", default=None)
+    p.add_argument("--wandb-tags", nargs="+", default=None)
     p.add_argument("--cache-dir", default=default_cache_dir())
+    p.add_argument(
+        "--no-test-results",
+        action="store_true",
+        help="do not save the test-set predictions (.txt) and parity plot",
+    )
     p.add_argument(
         "--regen-config",
         action="store_true",
@@ -109,8 +161,36 @@ def main() -> None:
     overrides = [
         f"dataset=graph/{config.stem}",
         f"model={args.model}",
-        f"logger={args.logger}",
+        f"logger={'wandb' if args.wandb else args.logger}",
     ]
+    if args.loss:
+        overrides.append(f"dataset.parameters.loss_type={args.loss}")
+    metrics = list(args.metrics) if args.metrics else None
+    if args.monitor_metric:
+        overrides.append(
+            f"dataset.parameters.monitor_metric={args.monitor_metric}"
+        )
+        # The monitored metric must be among the reported ones.
+        metrics = metrics or ["mae", "mse"]
+        if args.monitor_metric not in metrics:
+            metrics.append(args.monitor_metric)
+    if metrics:
+        overrides.append(f"+dataset.parameters.metrics=[{','.join(metrics)}]")
+    if args.wandb:
+        run_name = args.wandb_name or "_".join(
+            [name, args.model.replace("/", "-"), f"m{column}"]
+            + ([f"n{args.max_samples}"] if args.max_samples else [])
+        )
+        overrides += [
+            f"logger.wandb.project={args.wandb_project}",
+            f"+logger.wandb.name={run_name}",
+        ]
+        if args.wandb_entity:
+            overrides.append(f"+logger.wandb.entity={args.wandb_entity}")
+        if args.wandb_group:
+            overrides.append(f"logger.wandb.group={args.wandb_group}")
+        tags = args.wandb_tags or [name, args.model.replace("/", "-")]
+        overrides.append(f"logger.wandb.tags=[{','.join(tags)}]")
     if method is not None:
         overrides.append(f"{params}.energy_method={method}")
     for key, value in [
@@ -123,6 +203,23 @@ def main() -> None:
     ]:
         if value is not None:
             overrides.append(f"{key}={value}")
+
+    # The target of the run: a Hydra override, else the flag, else the yaml.
+    target = args.target or OmegaConf.load(config).loader.parameters.target
+    for item in extra:
+        if item.startswith(f"{params}.target="):
+            target = item.split("=", 1)[1]
+    if not args.no_test_results:
+        # Saves per-molecule test predictions (.txt) and a parity plot when
+        # training ends, in <run folder>/test_results.
+        callback = "callbacks.openqdc_test_results"
+        overrides += [
+            f"+{callback}._target_=topobench.callbacks.openqdc_test_results.OpenQDCTestResults",
+            f"+{callback}.dataset={name}",
+            f"+{callback}.model={args.model}",
+            f"+{callback}.energy_method={column}",
+            f"+{callback}.per_atom={str(target == PER_ATOM).lower()}",
+        ]
 
     cmd = [sys.executable, "-m", "topobench", *overrides, *extra]
     print(" ".join(cmd))

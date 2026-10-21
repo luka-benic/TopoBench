@@ -22,7 +22,7 @@ from topobench.data.utils.openqdc_utils import (
 log = logging.getLogger(__name__)
 
 # Bump when the conversion changes so stale processed files are not reused.
-PROCESSING_VERSION = 3
+PROCESSING_VERSION = 4
 
 
 class OpenQDCDataset(InMemoryDataset):
@@ -35,6 +35,8 @@ class OpenQDCDataset(InMemoryDataset):
     - ``z``: atomic numbers,
     - ``edge_index``: covalent bonds inferred from interatomic distances
       (``edge_method="bonds"``) or all pairs within ``cutoff`` (``"radius"``),
+    - ``openqdc_idx`` and ``n_atoms``: the OpenQDC molecule index and the
+      number of atoms (used to identify molecules in the test-set results),
     - ``energy``: the selected energy in eV, as returned by OpenQDC,
     - ``y``: the regression target, i.e. ``energy`` minus a per-element
       linear baseline when ``baseline="per_element"``, else ``energy``.
@@ -146,7 +148,13 @@ class OpenQDCDataset(InMemoryDataset):
                 f"v{PROCESSING_VERSION}",
                 self.target,
                 f"m{self.energy_method}",
-                f"b{self.baseline}",
+                # per-atom targets use atom fractions in the baseline
+                f"b{self.baseline}"
+                + (
+                    "frac"
+                    if self.target == "per_atom_formation_energies"
+                    else ""
+                ),
                 edges,
                 f"n{self.max_samples if self.max_samples is not None else 'all'}",
                 f"s{self.subsample_seed}",
@@ -271,6 +279,10 @@ class OpenQDCDataset(InMemoryDataset):
                     z=z,
                     edge_index=self._edges(pos, z),
                     num_nodes=len(z),
+                    # Not named "...index": PyG would offset such keys when
+                    # batching graphs.
+                    openqdc_idx=torch.tensor([int(i)]),
+                    n_atoms=torch.tensor([len(z)]),
                 )
             )
             counts.append(one_hot.sum(0).numpy())
@@ -282,7 +294,13 @@ class OpenQDCDataset(InMemoryDataset):
         if self.baseline == "per_element":
             # Linear per-element reference energies; the same least-squares fit
             # MACE uses for E0s=average, here on all converted molecules.
-            e0 = np.linalg.lstsq(counts, energies, rcond=None)[0]
+            # A per-atom target is an intensive quantity: its regressors are
+            # the atom fractions, not the atom counts.
+            regressors = counts
+            if self.target == "per_atom_formation_energies":
+                regressors = counts / counts.sum(axis=1, keepdims=True)
+            e0 = np.linalg.lstsq(regressors, energies, rcond=None)[0]
+            counts = regressors
         residual = energies - counts @ e0
         for d, energy, y in zip(data_list, energies, residual, strict=True):
             d.energy = torch.tensor([energy], dtype=torch.float64)
