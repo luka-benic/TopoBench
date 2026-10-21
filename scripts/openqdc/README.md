@@ -32,15 +32,16 @@ Both pipelines read the data through the same loader, so they see the same molec
 7. [Downloading and preprocessing](#downloading-and-preprocessing)
 8. [Training TopoBench](#training-topobench)
 9. [Training MACE](#training-mace)
-10. [The submission script (GPU or CPU)](#the-submission-script-gpu-or-cpu)
-11. [Running several jobs at once](#running-several-jobs-at-once)
-12. [Where files are saved](#where-files-are-saved)
-13. [Generating dataset configs](#generating-dataset-configs)
-14. [Using the data in Python](#using-the-data-in-python)
-15. [Comparing MACE and TopoBench](#comparing-mace-and-topobench)
-16. [Troubleshooting](#troubleshooting)
-17. [Known limitations](#known-limitations)
-18. [Development: tests and checks](#development-tests-and-checks)
+10. [Training on entire datasets](#training-on-entire-datasets)
+11. [The submission script (GPU or CPU)](#the-submission-script-gpu-or-cpu)
+12. [Running several jobs at once](#running-several-jobs-at-once)
+13. [Where files are saved](#where-files-are-saved)
+14. [Generating dataset configs](#generating-dataset-configs)
+15. [Using the data in Python](#using-the-data-in-python)
+16. [Comparing MACE and TopoBench](#comparing-mace-and-topobench)
+17. [Troubleshooting](#troubleshooting)
+18. [Known limitations](#known-limitations)
+19. [Development: tests and checks](#development-tests-and-checks)
 
 ## Quick start
 
@@ -310,6 +311,57 @@ Settings fixed by the script: `--model=MACE`, `--E0s=average` (per-element refer
 **Run names.** The default run name is `<data settings>_<split settings>_<8-character hash of the model and training settings>`. Runs that differ only in `--lr` or `--hidden-irreps` therefore get their own folder. A second run with **identical** settings refuses to start while the first is active (`Another run is already using ...`); give it its own `--name`.
 
 MACE prints an error table (MAE in meV) for train, validation and test at the end, and saves models, checkpoints and logs in `logs/mace_openqdc/<run name>/`.
+
+## Training on entire datasets
+
+Leave `--max-samples` out. Without it, both pipelines use every molecule of the dataset:
+
+```bash
+# TopoBench on GPU 3, all of Alchemy (202,579 molecules)
+scripts/openqdc/sub_openqdc.sh topobench 3 --dataset Alchemy --model graph/gcn --epochs 100
+
+# MACE on GPU 3, all of Alchemy
+scripts/openqdc/sub_openqdc.sh mace 3 --dataset Alchemy --epochs 100
+```
+
+Calling the scripts directly works the same way, for example `python scripts/openqdc/train_mace.py --dataset Alchemy --epochs 100`. If you edited `max_samples` in a dataset yaml to a number, set it back to `null`: a yaml value is used when no flag is given.
+
+### How `--max-samples` works
+
+`--max-samples N` trains on a random subset of N molecules; the rest are ignored and the subset is then split into train, validation and test. The choice is reproducible: `--subsample-seed` (default 0) fixes it. If N is larger than the dataset, the whole dataset is used. Both pipelines pick the same molecules for the same N and seed (they use the same random generator), but they split the subset into train/validation/test separately (see [Comparing MACE and TopoBench](#comparing-mace-and-topobench)).
+
+- **TopoBench:** `train_topobench.py` passes it as `dataset.loader.parameters.max_samples`; `OpenQDCDataset` draws the subset when it converts the molecules (`topobench/data/datasets/openqdc_dataset.py`). It is part of the converted-graph folder name (`..._n20000_s0`), so different subset sizes never reuse each other's graphs.
+- **MACE:** `train_mace.py` does not read it itself. The option is defined in `export_xyz.py` (`add_data_args`, which `train_mace.py` calls on its parser), and `export()` in the same file draws the subset when it writes the `.xyz` files. It is part of the `.xyz` folder name too. For `--max-samples 10000` on QM9 the files are in `datasets/openqdc_xyz/v3_QM9_formation_energies_m0_n10000_s0/split_v0.1_t0.1_s0/`, and MACE then reports about `train=8000, valid=1000` configurations.
+
+### Suggested order for a big dataset
+
+1. **Prepare the data first**, without a GPU, in the background. The training scripts do this automatically, but doing it first keeps a GPU from sitting idle during the download and conversion:
+   ```bash
+   nohup python scripts/openqdc/prepare_data.py topobench --dataset Alchemy > prep_tb.log 2>&1 &
+   nohup python scripts/openqdc/prepare_data.py mace --dataset Alchemy > prep_mace.log 2>&1 &
+   ```
+2. **Time one epoch on a subset** (for example `--max-samples 20000 --epochs 1`) and extrapolate before committing to a long run.
+3. **Start the training** in the background with `nohup ... > run.log 2>&1 &`, on a GPU with enough free memory (`nvidia-smi`). A full dataset does not change the memory per batch, only the number of batches.
+
+### What to expect
+
+Only subsets of up to 30,011 molecules have been run so far, so these are estimates:
+
+- **TopoBench conversion** ran at about 3,300 molecules per second in the tests: roughly 1 minute for Alchemy, 40 seconds for QM9 and several minutes for VQM24 (about 1.1 million molecules). It is cached, so later runs skip it.
+- **Training time grows with the number of molecules.** A MACE epoch on 1,600 molecules took about 6.5 seconds on a GPU. Scaling that linearly, a full Alchemy epoch would take roughly 10 to 15 minutes, so 100 epochs would take about a day. TopoBench epochs were not timed on large data.
+- **Memory.** The MACE export and the TopoBench conversion both hold all molecules in memory, and both scripts print a warning above 500,000 molecules (this applies to VQM24). MACE also builds neighbor lists for the whole training set at the start, which takes time and memory.
+- **CPU runs** are not realistic for full datasets.
+
+### Which datasets are sensible
+
+| Dataset | Molecules | Comment |
+|---|---|---|
+| Alchemy | 202,579 | Energy labels look right: the safest full-dataset test |
+| QM9 | 133,885 | OpenQDC's unit label is wrong (energies about 627 times too large), see [Known limitations](#known-limitations) |
+| QM7b | 7,211 | same label problem as QM9 |
+| MultixcQM9 | 133,631 | unit labels not checked |
+| TMQM | 86,665 | unit labels not checked |
+| VQM24 | 1,104,982 | start with a subset (memory, time) |
 
 ## The submission script (GPU or CPU)
 
