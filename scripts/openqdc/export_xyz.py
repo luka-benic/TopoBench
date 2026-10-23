@@ -26,7 +26,6 @@ from ase.io import write
 from generate_configs import configured_energy_method
 from tqdm import tqdm
 
-from topobench.data.datasets.openqdc_dataset import PROCESSING_VERSION
 from topobench.data.utils.openqdc_utils import (
     PROJECT_ROOT,
     OpenQDCSource,
@@ -54,9 +53,9 @@ def add_data_args(p: argparse.ArgumentParser) -> None:
     )
     p.add_argument(
         "--target",
-        default="formation_energies",
-        choices=["formation_energies", "energies"],
-        help="Energy written to REF_energy (eV)",
+        default="energies",
+        choices=["energies", "formation_energies"],
+        help="Energy written to REF_energy (eV): energies = total energy",
     )
     p.add_argument(
         "--energy-method",
@@ -96,7 +95,6 @@ def xyz_dir(args: argparse.Namespace) -> str:
     n = args.max_samples if args.max_samples is not None else "all"
     name = "_".join(
         [
-            f"v{PROCESSING_VERSION}",
             canonical_name(args.dataset),
             args.target,
             f"m{args.energy_method}",

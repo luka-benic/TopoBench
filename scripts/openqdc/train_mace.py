@@ -1,8 +1,10 @@
 """Train MACE on an energy-only OpenQDC dataset via extended XYZ files and ``mace_run_train``.
 
 The OpenQDC data is first exported to ``{train,valid,test}.xyz`` (see
-``export_xyz.py``; skipped if the files already exist), then the official MACE
-training CLI is run on them with energy-only settings (no forces).
+``export_xyz.py``; skipped if the files already exist), then MACE's training
+is run on them through ``run_mace_train.py`` with energy-only settings: forces
+are not computed (``--compute_forces=False``) and the force terms of the loss
+are skipped.
 
 Examples
 --------
@@ -20,7 +22,6 @@ import argparse
 import hashlib
 import json
 import os
-import shutil
 import subprocess
 import sys
 import uuid
@@ -72,8 +73,9 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
         default="weighted",
         choices=["weighted", "huber", "l1l2energyforces"],
         help="energy loss: weighted = mean squared error of the per-atom "
-        "energy, huber = Huber loss (see --huber-delta), l1l2energyforces = "
-        "mean absolute error of the per-atom energy",
+        "energy, l1l2energyforces = mean absolute error of the per-atom "
+        "energy, huber = Huber loss (see --huber-delta; MACE then also "
+        "computes stress, which removes the speed-up of not computing forces)",
     )
     p.add_argument("--huber-delta", type=float, default=0.01)
     p.add_argument(
@@ -140,18 +142,26 @@ def main() -> None:
         "loss",
         "huber_delta",
     ]
+    # "compute_forces": False keeps these runs apart from older runs that
+    # computed forces.
     settings = json.dumps(
-        [{k: getattr(args, k) for k in keys}, extra], sort_keys=True
+        [
+            {k: getattr(args, k) for k in keys},
+            extra,
+            {"compute_forces": False},
+        ],
+        sort_keys=True,
     )
     digest = hashlib.sha1(settings.encode()).hexdigest()[:8]
     name = args.name or f"{os.path.basename(data_dir)}_{split_dir}_{digest}"
     work_dir = os.path.join(args.work_dir, name)
 
-    mace_run_train = shutil.which("mace_run_train") or os.path.join(
-        os.path.dirname(sys.executable), "mace_run_train"
-    )
+    # MACE is always started through run_mace_train.py with this interpreter, so
+    # training and the test evaluation use the same MACE (the one of this env).
+    launcher = os.path.join(os.path.dirname(__file__), "run_mace_train.py")
     cmd = [
-        mace_run_train,
+        sys.executable,
+        launcher,
         f"--name={name}",
         f"--work_dir={work_dir}",
         f"--seed={args.seed}",
@@ -163,13 +173,14 @@ def main() -> None:
         f"--test_file={paths['test']}",
         f"--energy_key={ENERGY_KEY}",
         "--E0s=average",  # per-element reference energies fitted on train
-        # MACE has no energy-only loss: forces are predicted but get zero weight
-        # (frames without REF_forces also get config forces_weight=0).
+        # Energy only: forces are not computed (the force terms of the loss are
+        # skipped by the launcher), frames without REF_forces get a forces
+        # weight of 0 anyway, and the force weight is 0 as a second safeguard.
+        "--compute_forces=False",
         f"--loss={args.loss}",
         "--energy_weight=1.0",
         "--forces_weight=0.0",
-        "--stage_two_forces_weight=0.0",
-        "--scaling=std_scaling",  # rms_forces_scaling needs forces
+        "--scaling=std_scaling",  # the default rms_forces_scaling needs forces
         f"--error_table={args.error_table}",
         # Model
         "--model=MACE",
@@ -225,11 +236,6 @@ def main() -> None:
             ],
         ]
     cmd += extra
-    if args.wandb:
-        # mace_run_train crashes when logging forces-less data to W&B; the
-        # launcher fixes that (see run_mace_train.py).
-        launcher = os.path.join(os.path.dirname(__file__), "run_mace_train.py")
-        cmd[0:1] = [sys.executable, launcher]
     print(" \\\n  ".join(cmd))
     os.makedirs(work_dir, exist_ok=True)
     # Refuse to start if another run is using this folder right now.
@@ -256,7 +262,6 @@ def main() -> None:
             args.energy_method,
             args.device,
             args.valid_batch_size,
-            check_table=args.error_table == "TotalMAE",
         )
         if args.wandb:
             log_mace_results_to_wandb(

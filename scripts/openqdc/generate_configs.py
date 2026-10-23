@@ -129,7 +129,7 @@ def render(info: dict, energy_method: int = 0) -> str:
         "    data_dir: ${paths.data_dir}/${dataset.loader.parameters.data_domain}/${dataset.loader.parameters.data_type}",
         "    openqdc_cache_dir: ${oc.env:OPENQDC_CACHE_DIR,${paths.data_dir}/openqdc}",
         f"    atom_types: {json.dumps(atom_types)}",
-        "    target: formation_energies # formation_energies | energies | per_atom_formation_energies",
+        "    target: energies # energies (total) | formation_energies | per_atom_formation_energies",
         "    # Energy column to train on: its index in the list at the top of this file.",
         "    # Command line: dataset.loader.parameters.energy_method=<index>"
         " or --energy-method <index or name> in the scripts.",

@@ -21,9 +21,6 @@ from topobench.data.utils.openqdc_utils import (
 
 log = logging.getLogger(__name__)
 
-# Bump when the conversion changes so stale processed files are not reused.
-PROCESSING_VERSION = 4
-
 
 class OpenQDCDataset(InMemoryDataset):
     r"""Energy-only OpenQDC dataset converted to PyG molecular graphs.
@@ -85,7 +82,7 @@ class OpenQDCDataset(InMemoryDataset):
             return OmegaConf.select(parameters, key, default=default)
 
         self.atom_types = [int(z) for z in parameters.atom_types]
-        self.target = opt("target", "formation_energies")
+        self.target = opt("target", "energies")
         self.energy_method = opt("energy_method", 0)
         self.baseline = opt("baseline", "per_element")
         self.edge_method = opt("edge_method", "bonds")
@@ -145,7 +142,6 @@ class OpenQDCDataset(InMemoryDataset):
         )
         return "_".join(
             [
-                f"v{PROCESSING_VERSION}",
                 self.target,
                 f"m{self.energy_method}",
                 # per-atom targets use atom fractions in the baseline

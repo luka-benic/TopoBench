@@ -90,8 +90,12 @@ def predict_test_set(
     }
 
 
-def mace_reported_test_mae(log_file: Path) -> float | None:
-    """Read the test MAE (meV) from MACE's own final test table.
+def mace_reported_test_mae(log_file: Path) -> tuple[float, bool] | None:
+    """Read the test MAE from MACE's own final test table.
+
+    MACE decides which table it prints: the total energy error per molecule
+    (``MAE E / meV``) or, for some losses such as ``huber``, the error per
+    atom (``MAE E / meV / atom``).
 
     Parameters
     ----------
@@ -100,8 +104,9 @@ def mace_reported_test_mae(log_file: Path) -> float | None:
 
     Returns
     -------
-    float or None
-        The ``MAE E / meV`` of the last test table, or None if not found.
+    tuple[float, bool] or None
+        The MAE in meV of the last test table and whether it is per atom, or
+        None if there is no MAE table.
     """
     if not log_file.exists():
         return None
@@ -109,8 +114,12 @@ def mace_reported_test_mae(log_file: Path) -> float | None:
     start = text.rfind("Error-table on TEST")
     if start < 0:
         return None
-    row = re.search(r"\|\s*\S+\s*\|\s*([-+0-9.eE]+)\s*\|", text[start:])
-    return float(row.group(1)) if row else None
+    block = text[start:]
+    header = re.search(r"\|\s*config_type\s*\|\s*(MAE E[^|]*)\|", block)
+    row = re.search(r"\|\s*\S+\s*\|\s*([-+0-9.eE]+)\s*\|", block)
+    if header is None or row is None:
+        return None
+    return float(row.group(1)), "/ atom" in header.group(1)
 
 
 def log_mace_results_to_wandb(
@@ -163,7 +172,6 @@ def save_mace_test_results(
     energy_method: int,
     device: str,
     batch_size: int,
-    check_table: bool,
 ) -> dict:
     """Evaluate the best MACE model on the test set and save the results.
 
@@ -183,8 +191,6 @@ def save_mace_test_results(
         ``"cuda"`` or ``"cpu"``.
     batch_size : int
         Number of molecules per batch.
-    check_table : bool
-        Compare the MAE with MACE's ``TotalMAE`` test table.
 
     Returns
     -------
@@ -221,10 +227,13 @@ def save_mace_test_results(
     reported = mace_reported_test_mae(
         Path(work_dir) / "logs" / f"{name}_run-0.log"
     )
-    if check_table and reported is not None:
-        agree = abs(mae - reported) <= 0.01 * max(abs(reported), 1e-9)
+    if reported is not None:
+        value, per_atom = reported
+        ours = saved["metrics"]["mae_per_atom_meV" if per_atom else "mae_meV"]
+        agree = abs(ours - value) <= 0.01 * max(abs(value), 1e-9)
+        unit = "meV per atom" if per_atom else "meV"
         print(
-            f"[results] MACE's own test table: {reported:.5g} meV "
+            f"[results] MACE's own test table: {value:.5g} {unit} "
             + ("(agrees)" if agree else "(DIFFERS, check the saved files)"),
             flush=True,
         )

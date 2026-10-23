@@ -55,8 +55,8 @@ def main() -> None:
         "--target",
         default=None,
         choices=[
-            "formation_energies",
             "energies",
+            "formation_energies",
             "per_atom_formation_energies",
         ],
     )

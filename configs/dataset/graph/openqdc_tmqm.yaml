@@ -15,7 +15,7 @@ loader:
     data_dir: ${paths.data_dir}/${dataset.loader.parameters.data_domain}/${dataset.loader.parameters.data_type}
     openqdc_cache_dir: ${oc.env:OPENQDC_CACHE_DIR,${paths.data_dir}/openqdc}
     atom_types: [1, 5, 6, 7, 8, 9, 14, 15, 16, 17, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 33, 34, 35, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 53, 57, 72, 73, 74, 75, 76, 77, 78, 79, 80]
-    target: formation_energies # formation_energies | energies | per_atom_formation_energies
+    target: energies # energies (total) | formation_energies | per_atom_formation_energies
     # Energy column to train on: its index in the list at the top of this file.
     # Command line: dataset.loader.parameters.energy_method=<index> or --energy-method <index or name> in the scripts.
     energy_method: 0

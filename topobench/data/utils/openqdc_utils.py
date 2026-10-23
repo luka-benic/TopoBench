@@ -375,7 +375,7 @@ class OpenQDCSource:
         return [str(m) for m in self.ds.energy_methods]
 
     def get(
-        self, i: int, target: str = "formation_energies", method: int = 0
+        self, i: int, target: str = "energies", method: int = 0
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
         """Read one molecule.
 
@@ -384,7 +384,7 @@ class OpenQDCSource:
         i : int
             Molecule index.
         target : str
-            ``"formation_energies"``, ``"energies"`` or
+            ``"energies"`` (total energy), ``"formation_energies"`` or
             ``"per_atom_formation_energies"``.
         method : int
             Energy column.

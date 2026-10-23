@@ -85,7 +85,7 @@ The first run downloads the dataset and preprocesses it; later runs reuse both. 
 | `topobench/utils/openqdc_results.py` | Metrics, `.txt` writers and the parity plot (shared by both pipelines) |
 | `topobench/callbacks/openqdc_test_results.py` | TopoBench callback that saves the test-set predictions when training ends |
 | `scripts/openqdc/mace_test_results.py` | Evaluates the best MACE model on `test.xyz` and saves the same files |
-| `scripts/openqdc/run_mace_train.py` | Starts `mace_run_train` with Weights & Biases logging that works without forces |
+| `scripts/openqdc/run_mace_train.py` | Starts MACE's training for energy-only data: skips the force terms of the loss so forces need not be computed, and makes W&B logging work without forces |
 | `test/data/utils/test_openqdc_*.py`, `test_split_concurrency.py`, `test/utils/test_openqdc_results.py` | Unit tests |
 
 ## Concepts and conventions
@@ -106,11 +106,11 @@ A dataset stores **one energy per quantum-chemistry method** for each molecule. 
 
 | `target` | Meaning |
 |---|---|
-| `formation_energies` (default) | total energy minus the sum of OpenQDC's isolated-atom reference energies |
-| `energies` | the total energy |
+| `energies` (default) | the total energy of the molecule |
+| `formation_energies` | total energy minus the sum of OpenQDC's isolated-atom reference energies |
 | `per_atom_formation_energies` | formation energy divided by the number of atoms (TopoBench only). TopoBench's losses and metrics are then per atom, like MACE's; the saved test-set results are converted back to energies per molecule |
 
-For datasets without isolated-atom reference energies (QM9, QM8, QM7b) the formation energy equals the total energy.
+Both pipelines use the **total energy** by default. For datasets without isolated-atom reference energies (QM9, QM8, QM7b) the formation energy equals the total energy, so the choice only matters for the other datasets (for Alchemy, total energies are about -13,000 eV and formation energies about -100 eV). Total energies are large numbers, which is why both pipelines subtract a per-element baseline (see below).
 
 ### What the TopoBench graph contains
 
@@ -205,7 +205,7 @@ Energies of different columns are on different scales (several Hartree apart); n
 | `openqdc_cache_dir` | `$OPENQDC_CACHE_DIR`, else `<repo>/datasets/openqdc` | Where OpenQDC data is stored |
 | `data_dir` | `<repo>/datasets/graph/openqdc` | Where the converted graphs are stored |
 | `atom_types` | detected | Elements used for the one-hot node features |
-| `target` | `formation_energies` | See [Target](#target) |
+| `target` | `energies` | See [Target](#target) |
 | `energy_method` | `0` | The energy column, see above |
 | `baseline` | `per_element` (`none` for QM8) | See [The per-element baseline](#the-per-element-baseline) |
 | `edge_method` | `bonds` | `bonds` or `radius` |
@@ -267,7 +267,7 @@ python scripts/openqdc/train_topobench.py --dataset QM9 --model graph/gcn -- \
 | `--dataset` | required | OpenQDC dataset name, case-insensitive |
 | `--model` | `graph/gcn` | Any model config under `configs/model/`, e.g. `graph/gin`, `simplicial/scn`, `cell/cwn`, `hypergraph/unignn2` |
 | `--energy-method` | from the yaml | Energy column, index or name |
-| `--target` | from the yaml | `formation_energies`, `energies` or `per_atom_formation_energies` |
+| `--target` | from the yaml (`energies`) | `energies`, `formation_energies` or `per_atom_formation_energies` |
 | `--max-samples` | all | Random subset of molecules (recommended for datasets above ~500k molecules) |
 | `--subsample-seed` | from the yaml | Seed of that subset |
 | `--epochs` | from the config | `trainer.max_epochs` |
@@ -304,7 +304,7 @@ Other model configs should work the same way but were not run.
 python scripts/openqdc/train_mace.py --dataset QM9 --energy-method 0 --max-samples 20000 --epochs 50
 ```
 
-The script prepares the data, exports `train.xyz`, `valid.xyz` and `test.xyz`, then runs the official `mace_run_train`. Extra `mace_run_train` flags go after `--`:
+The script prepares the data, exports `train.xyz`, `valid.xyz` and `test.xyz`, then runs MACE's training (`mace_run_train`, started through `run_mace_train.py` with the Python of this environment, so training and the test evaluation use the same MACE). Extra `mace_run_train` flags go after `--`:
 
 ```bash
 python scripts/openqdc/train_mace.py --dataset Alchemy -- --num_channels=128 --max_L=1
@@ -314,7 +314,7 @@ python scripts/openqdc/train_mace.py --dataset Alchemy -- --num_channels=128 --m
 |---|---|---|
 | `--dataset` | required | OpenQDC dataset name |
 | `--energy-method` | from the yaml, else 0 | Energy column, index or name |
-| `--target` | `formation_energies` | `formation_energies` or `energies`; written to `REF_energy` in eV |
+| `--target` | `energies` | `energies` (total energy) or `formation_energies`; written to `REF_energy` in eV |
 | `--max-samples`, `--subsample-seed` | all, 0 | Same molecule selection as TopoBench |
 | `--valid-fraction`, `--test-fraction`, `--split-seed` | 0.1, 0.1, 0 | Random split done during the export |
 | `--allow-non-total` | off | Export datasets whose energies are not total energies (see QM8) |
@@ -332,13 +332,18 @@ python scripts/openqdc/train_mace.py --dataset Alchemy -- --num_channels=128 --m
 | `--xyz-root`, `--work-dir` | `datasets/openqdc_xyz`, `logs/mace_openqdc` | Where files and runs are saved |
 | `--name` | derived | Run name (see below) |
 
-Settings fixed by the script: `--model=MACE`, `--E0s=average` (per-element reference energies fitted on the training set), `--scaling=std_scaling`, `--amsgrad`, `--ema` with decay 0.99, and energy weight 1.
+Settings fixed by the script: `--model=MACE`, `--compute_forces=False` (energy only, see below), `--E0s=average` (per-element reference energies fitted on the training set), `--scaling=std_scaling` (the default `rms_forces_scaling` needs forces), `--energy_weight=1.0`, `--forces_weight=0.0`, `--amsgrad`, and `--ema` with decay 0.99.
 
 **The `.xyz` files.** Each frame holds the atoms, positions in Angstrom, `pbc=F`, the energy in `REF_energy` (eV) and the OpenQDC molecule index in `openqdc_index`. No forces are written. `export_args.json` records the exact settings.
 
-**Energy-only quirk.** MACE's loss always contains a force term. The script lets MACE predict forces but gives them weight 0, and the files contain no forces, so the training is correct. Epochs take about three times longer than a pure-energy loop, and the log shows `MAE_F=None`; this is expected.
+**Energy-only training.** MACE has no energy-only mode on its command line, so the script combines three things:
+- `--compute_forces=False` makes MACE skip the forces, which saves the force gradient (the larger part of a training step). Frames without `REF_forces` also get a force weight of 0, and `--forces_weight=0.0` is set as a second safeguard.
+- MACE's energy losses (`weighted`, `l1l2energyforces`) would still read the predicted forces and crash with `TypeError` when none are computed. `run_mace_train.py` therefore skips the force terms of the loss when no forces were computed. The launcher stops with a message if MACE's loss module does not have the expected functions (it is written for MACE 0.3.x).
+- The log then says `following quantities will be reported: energy`, and the force columns of the tables show `None`.
 
-**Run names.** The default run name is `<data settings>_<split settings>_<8-character hash of the model and training settings>`. Runs that differ only in `--lr` or `--hidden-irreps` therefore get their own folder. A second run with **identical** settings refuses to start while the first is active (`Another run is already using ...`); give it its own `--name`.
+Measured on a GPU (Alchemy, 3,000 molecules, 4 epochs): 45.7 seconds per epoch instead of 98.6 with forces on (2.2 times faster), with an identical test MAE (1030.0 meV). To compute forces anyway, add `-- --compute_forces=True` (the extra flag overrides the script's). The `huber` loss is the exception: MACE then switches stress computation on by itself, which needs the same gradient, so there is no speed-up (the log reports `energy, stress`).
+
+**Run names.** The default run name is `<data settings>_<split settings>_<8-character hash of the model and training settings>`, for example `Alchemy_energies_m0_n2000_s0_split_v0.1_t0.1_s0_4681b105` (`v0.1` is the validation fraction). The same name is used for the run folder and, with `--wandb`, for the W&B run. Runs that differ only in `--lr` or `--hidden-irreps` therefore get their own folder. A second run with **identical** settings refuses to start while the first is active (`Another run is already using ...`); give it its own `--name`.
 
 ### Test-set metrics in MACE
 
@@ -372,7 +377,7 @@ Both frameworks separate three things: the **loss** that is minimised, the **met
 | Best checkpoint and early stopping by | a validation metric: `--monitor-metric mae`, `mse` or `rmse` (default `mae`; yaml `parameters.monitor_metric`); patience 25 epochs | always the validation **loss**, not selectable; patience `--patience` (default 30) |
 | Reported metrics | `--metrics mae mse rmse r2` (default `mae mse`) | `--error-table TotalMAE`, `PerAtomMAE`, `TotalRMSE` or `PerAtomRMSE` (default `TotalMAE`) |
 
-**MACE losses** (the force part has weight 0 here, so only the energy term counts, computed on the per-atom energy): `weighted` is the mean squared error, `huber` is the Huber loss with `--huber-delta` (default 0.01), `l1l2energyforces` is the mean absolute error. `--error-table` decides the metric in the per-epoch validation lines of the log (for example `MAE_E` for `TotalMAE`, `MAE_E_per_atom` for `PerAtomMAE`) and in the final tables.
+**MACE losses** (only the energy term counts, computed on the per-atom energy): `weighted` is the mean squared error, `huber` is the Huber loss with `--huber-delta` (default 0.01), `l1l2energyforces` is the mean absolute error. `--error-table` decides the metric in the per-epoch validation lines of the log (for example `MAE_E` for `TotalMAE`, `MAE_E_per_atom` for `PerAtomMAE`) and in the final tables.
 
 **TopoBench metrics.** The monitored metric is added to the reported metrics automatically. `r2` can be reported but not monitored (TopoBench minimises the monitored metric). The loss and the monitored metric can also be set in the dataset yaml under `parameters`.
 
@@ -426,7 +431,7 @@ Both `.txt` files are plain text with `#` comment lines at the top (model, datas
 | `prediction_eV` | energy predicted by the model, in eV |
 | `error_eV` | `prediction_eV - reference_eV` |
 
-The energies are per molecule, not per atom. With the default target they are formation energies (identical to total energies for QM9 and QM7b).
+The energies are per molecule, not per atom. With the default target they are total energies (`--target formation_energies` gives formation energies instead).
 
 ### `test_metrics.txt`
 
@@ -439,7 +444,7 @@ Reference energy on the x axis, predicted energy on the y axis (both in eV, same
 ### How the numbers are obtained
 
 - **TopoBench.** TopoBench trains on the baseline-subtracted energy `y`. When training ends, a callback (`OpenQDCTestResults`) loads the best checkpoint and runs it once over the test set. The prediction is converted back to an energy with the stored energy of each molecule: `prediction = energy - (y - y_predicted)`. The MAE equals the `test/mae` that TopoBench prints (checked for `graph/gcn`, `hypergraph/unignn2`, `simplicial/scn` and `cell/cwn`; the molecule index, atom count and energy survive the lifts of all these domains).
-- **MACE.** `train_mace.py` loads the best model that `mace_run_train` saved (`<run name>.model`) and predicts every frame of `test.xyz`. It then compares its MAE with the one in MACE's own `Error-table on TEST` (when `--error-table` is `TotalMAE`) and prints `(agrees)` or `(DIFFERS ...)`.
+- **MACE.** `train_mace.py` loads the best model that `mace_run_train` saved (`<run name>.model`) and predicts every frame of `test.xyz`. It then compares its MAE with the one in MACE's own `Error-table on TEST` and prints `(agrees)` or `(DIFFERS ...)`. MACE decides whether its table is per molecule or per atom (for example the `huber` loss gives a per-atom table), and the check compares with the matching metric; tables of RMSE type are not compared.
 
 Load the results in Python:
 
@@ -455,7 +460,7 @@ idx, n_atoms, reference, prediction, error = np.loadtxt(
 
 - The test sets of MACE and TopoBench are different molecules (their splits differ, see [Comparing MACE and TopoBench](#comparing-mace-and-topobench)). `openqdc_idx` identifies a molecule across runs, so results of two runs can be compared on the molecules they share.
 - The files are written only when a run finishes training; a run that is stopped early leaves none.
-- Graphs converted by an older version of this code have no `openqdc_idx` and `n_atoms`. The processing version was raised to `v4` for that, so they are converted again (the old `v3` folders are not used any more and can be deleted).
+- Graphs converted by an older version of this code have no `openqdc_idx` and `n_atoms`. Delete the old folder `datasets/graph/openqdc/<Dataset>` so that they are converted again.
 
 ## Weights & Biases logging
 
@@ -504,7 +509,7 @@ scripts/openqdc/sub_openqdc.sh mace 3 --dataset Alchemy \
 - Put the TopoBench and MACE runs you want to compare in the **same project** and give them the same `--wandb-group`, or use the tags (dataset and model are added automatically); W&B can then filter and plot them together.
 - The project is used by both training scripts and by `sub_openqdc.sh`, which passes the flags on.
 
-**MACE specifics.** With `--wandb`, `train_mace.py` starts MACE through `run_mace_train.py`: MACE's own wandb logging crashes on data without forces (it tries to log a placeholder for the missing force error), and the launcher turns such values into `None`. `mace_run_train` ends its W&B run when it exits, so the test-set results are added afterwards by resuming the same run (its id is chosen beforehand). In offline mode this leaves two local run folders with the same id; `wandb sync` merges them into one run.
+**MACE specifics.** `train_mace.py` always starts MACE through `run_mace_train.py`. For W&B this matters because MACE's own wandb logging crashes on data without forces (it tries to log a placeholder for the missing force error); the launcher turns such values into `None`. `mace_run_train` ends its W&B run when it exits, so the test-set results are added afterwards by resuming the same run (its id is chosen beforehand). In offline mode this leaves two local run folders with the same id; `wandb sync` merges them into one run.
 
 **Tested** only in offline mode, for both pipelines (the recorded runs contain the metrics, config, parity image and test-set summary). No test runs were uploaded to a Weights & Biases account during development.
 
@@ -527,7 +532,7 @@ Calling the scripts directly works the same way, for example `python scripts/ope
 `--max-samples N` trains on a random subset of N molecules; the rest are ignored and the subset is then split into train, validation and test. The choice is reproducible: `--subsample-seed` (default 0) fixes it. If N is larger than the dataset, the whole dataset is used. Both pipelines pick the same molecules for the same N and seed (they use the same random generator), but they split the subset into train/validation/test separately (see [Comparing MACE and TopoBench](#comparing-mace-and-topobench)).
 
 - **TopoBench:** `train_topobench.py` passes it as `dataset.loader.parameters.max_samples`; `OpenQDCDataset` draws the subset when it converts the molecules (`topobench/data/datasets/openqdc_dataset.py`). It is part of the converted-graph folder name (`..._n20000_s0`), so different subset sizes never reuse each other's graphs.
-- **MACE:** `train_mace.py` does not read it itself. The option is defined in `export_xyz.py` (`add_data_args`, which `train_mace.py` calls on its parser), and `export()` in the same file draws the subset when it writes the `.xyz` files. It is part of the `.xyz` folder name too. For `--max-samples 10000` on QM9 the files are in `datasets/openqdc_xyz/v4_QM9_formation_energies_m0_n10000_s0/split_v0.1_t0.1_s0/`, and MACE then reports about `train=8000, valid=1000` configurations.
+- **MACE:** `train_mace.py` does not read it itself. The option is defined in `export_xyz.py` (`add_data_args`, which `train_mace.py` calls on its parser), and `export()` in the same file draws the subset when it writes the `.xyz` files. It is part of the `.xyz` folder name too. For `--max-samples 10000` on QM9 the files are in `datasets/openqdc_xyz/QM9_energies_m0_n10000_s0/split_v0.1_t0.1_s0/`, and MACE then reports about `train=8000, valid=1000` configurations.
 
 ### Suggested order for a big dataset
 
@@ -630,7 +635,7 @@ Not covered: GPU memory (each job needs its own GPU or enough free memory), and 
 
 `datasets/` and `logs/` are in `.gitignore`. Move the OpenQDC data to another disk with `export OPENQDC_CACHE_DIR=/absolute/path` **before** starting Python (OpenQDC reads the variable when it is imported).
 
-OpenQDC does not delete cached data by itself. Datasets can be hundreds of GB, so check free space before downloading a large one. The settings folders contain a version (`v4`), so converted data from an older version of this code is never reused.
+OpenQDC does not delete cached data by itself. Datasets can be hundreds of GB, so check free space before downloading a large one. The folder names contain the conversion settings but no version: if the conversion code changes, delete the old folders (`datasets/graph/openqdc` and `datasets/openqdc_xyz`) so that the data is made again.
 
 ## Generating dataset configs
 
