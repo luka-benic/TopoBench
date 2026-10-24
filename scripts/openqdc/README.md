@@ -130,9 +130,9 @@ Both pipelines use the **total energy** by default. For datasets without isolate
 
 ### The per-element baseline
 
-Molecular energies are dominated by the energy of the atoms. With `baseline: per_element` (default) TopoBench fits one energy per element by least squares and trains on the remainder `y = energy - sum(count_z * e0_z)`. The fitted values are written to `baseline.json` next to the graphs. MACE does the same internally (`--E0s=average`), so the errors of both are comparable. `baseline: none` trains on the raw energy. The default is `none` for datasets whose energies are not total energies (QM8).
+Molecular energies are dominated by the energy of the atoms. With `baseline: per_element` (default) TopoBench fits one energy per element by least squares and trains on the remainder `y = energy - sum(count_z * e0_z)`. The fitted values are written to `baseline.json` next to the graphs. The fit uses the **training split only**, exactly like MACE's `--E0s=average` (the same least-squares problem on the same molecules), so both pipelines train on the same quantity, the energy minus the same per-element baseline. This was checked on Alchemy (2000 molecules): the fitted values in `baseline.json` equal MACE's printed `Atomic Energies used` to every digit. MACE's `std_scaling` is a normalisation inside the network and does not change the target. `baseline: none` trains on the raw energy. The default is `none` for datasets whose energies are not total energies (QM8).
 
-The baseline is fitted on all converted molecules for TopoBench, and on the training split only for MACE.
+Because the baseline depends on the split, the split settings (`valid_fraction`, `test_fraction`, `split_seed`) are part of the TopoBench graph folder name (`..._split_v0.1_t0.1_s0`); a different split seed converts the graphs again. All TopoBench models (graph, hypergraph, simplicial, cell) read the same `y` from these graphs, so they all train on the same energies as MACE.
 
 ### What is and is not changed relative to the raw data
 
@@ -259,7 +259,7 @@ Both pipelines use one function, `split_molecules` in `topobench/data/utils/open
 | Where | `OpenQDCDataset.split_idx` (`split_type: fixed` in the yaml) | `partition_frames` in `export_xyz.py` |
 | Parameters | `dataset.loader.parameters.{valid_fraction,test_fraction,split_seed}` or `--valid-fraction --test-fraction --split-seed` | the same flags; the default is read from the dataset yaml |
 
-The split settings are not part of the TopoBench graph folder name, so changing the seed does not convert the graphs again. For MACE they are part of the `.xyz` folder name (`split_v0.1_t0.1_s0`).
+The split settings are part of both folder names (TopoBench graphs: `..._split_v0.1_t0.1_s0`, MACE `.xyz` files: `split_v0.1_t0.1_s0`), because the per-element baseline is fitted on the training split. A new `--split-seed` therefore converts or exports the data again. The baseline is the same for both pipelines, see [The per-element baseline](#the-per-element-baseline).
 
 The split is identical when both runs use the same **dataset, energy column, target, `--max-samples`, `--subsample-seed`** (they decide which molecules exist; molecules without an energy for the column are dropped by both) and split settings. This was checked on Alchemy (2000 molecules): the train, validation and test index sets of the `.xyz` files equal those of TopoBench, and both `test_predictions.txt` files list the same 200 molecules.
 
@@ -421,7 +421,7 @@ Only partly: the two frameworks optimise different quantities by default.
 
 - **For comparing the results, use the saved `test_metrics.txt`.** Both pipelines write it with the same definitions (computed by the same function from the same kind of data: energy per molecule in eV), so `mae_eV`, `rmse_eV`, `r2`, `mae_per_atom_meV` and the others can be compared directly, whatever loss and metric each model was trained with.
 - **To make the training loss comparable**, let TopoBench learn the per-atom energy: `--target per_atom_formation_energies`. Its loss is then per atom like MACE's, so `--loss mse` corresponds to MACE's `--loss weighted` and `--loss mae` to `--loss l1l2energyforces`. With `--monitor-metric mse` (or `mae`) TopoBench then selects the best checkpoint by the same validation quantity as MACE (MACE always uses its validation loss), and `test/mae` is in eV per atom, which is MACE's `PerAtomMAE` divided by 1000. MACE's `huber` loss has no TopoBench counterpart.
-- The match is still approximate: the models differ, the per-element baseline is fitted differently (on all molecules for TopoBench, on the training split for MACE).
+- For the same settings both pipelines use the same energies, split and per-element baseline; what still differs is the model and the training procedure (optimiser, schedule, internal scaling).
 
 ## Test-set results: .txt files and parity plots
 
@@ -693,7 +693,7 @@ numbers, charges, positions, energy = src.get(
 
 - Use the **same dataset, energy column, target and `--max-samples` / `--subsample-seed`**. Then both see the same molecules and energies.
 - TopoBench reports eV (`test/mae`), MACE reports meV (`MAE E / meV` in the final test table; 1 eV = 1000 meV). Both are the mean absolute error of the total energy per molecule after removing a per-element baseline, both measured on the best checkpoint (by validation) on a held-out 10% test set.
-- **The splits are identical** for the same data settings, see [Splits](#splits-identical-for-mace-and-topobench).
+- **The splits and the baseline are identical** for the same data settings, see [Splits](#splits-identical-for-mace-and-topobench).
 
 ## Troubleshooting
 

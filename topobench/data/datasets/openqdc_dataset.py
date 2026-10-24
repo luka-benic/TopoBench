@@ -170,6 +170,9 @@ class OpenQDCDataset(InMemoryDataset):
                 edges,
                 f"n{self.max_samples if self.max_samples is not None else 'all'}",
                 f"s{self.subsample_seed}",
+                # the baseline is fitted on the training split only
+                f"split_v{self.valid_fraction}_t{self.test_fraction}"
+                f"_s{self.split_seed}",
             ]
         )
 
@@ -304,14 +307,23 @@ class OpenQDCDataset(InMemoryDataset):
         energies = np.asarray(energies, dtype=np.float64)
         e0 = np.zeros(len(self.atom_types))
         if self.baseline == "per_element":
-            # Linear per-element reference energies; the same least-squares fit
-            # MACE uses for E0s=average, here on all converted molecules.
+            # Linear per-element reference energies: the same least-squares fit
+            # on the training molecules that MACE uses for E0s=average, so
+            # both pipelines train on the same energy minus the same baseline.
             # A per-atom target is an intensive quantity: its regressors are
             # the atom fractions, not the atom counts.
             regressors = counts
             if self.target == "per_atom_formation_energies":
                 regressors = counts / counts.sum(axis=1, keepdims=True)
-            e0 = np.linalg.lstsq(regressors, energies, rcond=None)[0]
+            train = split_positions(
+                [int(d.openqdc_idx) for d in data_list],
+                self.valid_fraction,
+                self.test_fraction,
+                self.split_seed,
+            )["train"]
+            e0 = np.linalg.lstsq(
+                regressors[train], energies[train], rcond=None
+            )[0]
             counts = regressors
         residual = energies - counts @ e0
         for d, energy, y in zip(data_list, energies, residual, strict=True):
@@ -323,6 +335,7 @@ class OpenQDCDataset(InMemoryDataset):
                 {
                     "unit": "ev",
                     "baseline": self.baseline,
+                    "fitted_on": "train split",
                     "atom_types": self.atom_types,
                     "e0": e0.tolist(),
                     "n_molecules": len(data_list),
