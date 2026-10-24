@@ -209,3 +209,6 @@ result_BREC/
 # test temporary
 .test_tmp/
 uv.lock
+
+# molecule viewer output (openqdc_viewer.py)
+figures/

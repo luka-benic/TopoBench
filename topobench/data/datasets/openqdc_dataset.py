@@ -7,7 +7,6 @@ import os.path as osp
 
 import numpy as np
 import torch
-from ase.data import covalent_radii
 from omegaconf import DictConfig, OmegaConf
 from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.io import fs
@@ -16,6 +15,7 @@ from tqdm import tqdm
 from topobench.data.utils.openqdc_utils import (
     OpenQDCSource,
     locked,
+    molecular_edges,
     resolve_energy_method,
     split_positions,
 )
@@ -228,14 +228,9 @@ class OpenQDCDataset(InMemoryDataset):
         torch.Tensor
             Edge index, shape ``[2, E]``, both directions included.
         """
-        dist = torch.cdist(pos, pos)
-        if self.edge_method == "bonds":
-            r = torch.as_tensor(covalent_radii, dtype=pos.dtype)[z]
-            adj = dist < self.bond_scale * (r[:, None] + r[None, :])
-        else:
-            adj = dist < self.cutoff
-        adj.fill_diagonal_(False)
-        return adj.nonzero().t().contiguous()
+        return molecular_edges(
+            pos, z, self.edge_method, self.bond_scale, self.cutoff
+        )
 
     def process(self) -> None:
         """Convert the OpenQDC conformers to PyG graphs and save them."""

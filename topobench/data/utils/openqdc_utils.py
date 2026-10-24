@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import torch
+from ase.data import covalent_radii
 from filelock import FileLock, Timeout
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -134,6 +136,52 @@ def method_names_for(name: str) -> list[str]:
     if names is not None and len(names) == len(methods):
         return [str(n) for n in names]
     return [str(m) for m in methods]
+
+
+def molecular_edges(
+    positions: Any,
+    numbers: Any,
+    method: str = "bonds",
+    bond_scale: float = 1.3,
+    cutoff: float = 5.0,
+) -> torch.Tensor:
+    """Build the undirected edge index of one molecule from its geometry.
+
+    This is the edge construction of ``OpenQDCDataset`` (and of the molecule
+    viewer), so both always show the same graph.
+
+    Parameters
+    ----------
+    positions : array-like
+        Atom positions in Angstrom, shape ``[N, 3]``.
+    numbers : array-like
+        Atomic numbers, shape ``[N]``.
+    method : str
+        ``"bonds"``: two atoms are connected if their distance is below
+        ``bond_scale`` times the sum of their covalent radii. ``"radius"``:
+        connected if the distance is below ``cutoff`` (Angstrom).
+    bond_scale : float
+        Factor on the sum of covalent radii (``method="bonds"``).
+    cutoff : float
+        Distance cutoff in Angstrom (``method="radius"``).
+
+    Returns
+    -------
+    torch.Tensor
+        Edge index, shape ``[2, E]``, both directions included, no self-loops.
+    """
+    if method not in ("bonds", "radius"):
+        raise ValueError("method must be 'bonds' or 'radius'.")
+    pos = torch.as_tensor(np.asarray(positions), dtype=torch.float32)
+    z = torch.as_tensor(np.asarray(numbers), dtype=torch.long)
+    dist = torch.cdist(pos, pos)
+    if method == "bonds":
+        r = torch.as_tensor(covalent_radii, dtype=pos.dtype)[z]
+        adj = dist < bond_scale * (r[:, None] + r[None, :])
+    else:
+        adj = dist < cutoff
+    adj.fill_diagonal_(False)
+    return adj.nonzero().t().contiguous()
 
 
 def split_molecules(

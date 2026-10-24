@@ -42,10 +42,11 @@ Both pipelines read the data through the same loader, so they see the same molec
 17. [Where files are saved](#where-files-are-saved)
 18. [Generating dataset configs](#generating-dataset-configs)
 19. [Using the data in Python](#using-the-data-in-python)
-20. [Comparing MACE and TopoBench](#comparing-mace-and-topobench)
-21. [Troubleshooting](#troubleshooting)
-22. [Known limitations](#known-limitations)
-23. [Development: tests and checks](#development-tests-and-checks)
+20. [Viewing molecules, edges and liftings](#viewing-molecules-edges-and-liftings)
+21. [Comparing MACE and TopoBench](#comparing-mace-and-topobench)
+22. [Troubleshooting](#troubleshooting)
+23. [Known limitations](#known-limitations)
+24. [Development: tests and checks](#development-tests-and-checks)
 
 ## Quick start
 
@@ -84,11 +85,12 @@ The first run downloads the dataset and preprocesses it; later runs reuse both. 
 | `topobench/data/loaders/graph/openqdc_datasets_loader.py` | `OpenQDCDatasetLoader`, found automatically by TopoBench |
 | `topobench/data/utils/split_utils.py` | `random_splitting`, made safe for concurrent jobs (not used by the OpenQDC configs any more) |
 | `topobench/data/utils/openqdc_utils.py` (`split_molecules`, `split_positions`) | the train/valid/test split shared by TopoBench and MACE |
+| `topobench/utils/openqdc_viewer.py`, `openqdc_liftings.py` | Interactive 3D viewer of molecules with their bond and cutoff edges and the liftings of TopoBench models |
 | `topobench/utils/openqdc_results.py` | Metrics, `.txt` writers, `save_split` and the parity plot (shared by both pipelines) |
 | `topobench/callbacks/openqdc_test_results.py` | TopoBench callback that saves `split.txt` when training starts and the test-set predictions when it ends |
 | `scripts/openqdc/mace_test_results.py` | Evaluates the best MACE model on `test.xyz` and saves the same files; `save_mace_split` writes `split.txt` |
 | `scripts/openqdc/run_mace_train.py` | Starts MACE's training for energy-only data: skips the force terms of the loss so forces need not be computed, and makes W&B logging work without forces |
-| `test/data/utils/test_openqdc_*.py`, `test_openqdc_split.py`, `test_split_concurrency.py`, `test/utils/test_openqdc_results.py` | Unit tests |
+| `test/data/utils/test_openqdc_*.py`, `test_openqdc_split.py`, `test_split_concurrency.py`, `test/utils/test_openqdc_results.py`, `test/utils/test_openqdc_viewer.py` | Unit tests |
 
 ## Concepts and conventions
 
@@ -689,6 +691,70 @@ numbers, charges, positions, energy = src.get(
 
 `OpenQDCSource` loads the dataset with `energy_unit="ev"`, `distance_unit="ang"` and checks that the files are complete.
 
+## Viewing molecules, edges and liftings
+
+`topobench/utils/openqdc_viewer.py` draws OpenQDC molecules in 3D (interactive Plotly) with the edges both rules produce, and, if you pass TopoBench models, with the higher-order structures their liftings create. The edges come from `molecular_edges` in `openqdc_utils.py`, the function `OpenQDCDataset` itself calls, so the figure shows exactly the graph TopoBench builds.
+
+```python
+from topobench.utils.openqdc_viewer import view_molecules, view_molecule, view_atoms
+
+# One page with several molecules and the liftings of some TopoBench models
+view_molecules(
+    "QM9", [3, 17, 1234], "figures", "qm9",          # -> figures/qm9.html
+    models=["simplicial/scn", "cell/cwn", "hypergraph/unignn2"],
+    bond_scale=[1.1, 1.3, 1.5], cutoff=[2.0, 3.0, 5.0],   # lists give menus in the page
+)
+
+view_molecule("QM9", index=1234)                      # one molecule, opens in a browser
+view_atoms(numbers, positions)                        # your own atoms (Angstrom)
+```
+
+On a machine without a browser write the page and open it elsewhere (`--offline` embeds the Plotly library, about 5 MB, so the page also works without internet):
+
+```bash
+python -m topobench.utils.openqdc_viewer --dataset QM9 --indices 3 17 1234 \
+    --save-dir figures --base-name qm9 --bond-scale 1.1 1.3 1.5 --cutoff 2 3 5 \
+    --models simplicial/scn cell/cwn hypergraph/unignn2
+```
+
+### The page
+
+`view_molecules` writes **one** HTML file, `<save_dir>/<base_name>.html`. A bar above the plot has:
+
+| Control | What it does |
+|---|---|
+| ◀ menu ▶ (or the left/right keys) | switch between the molecules you passed |
+| *bond edges*, *cutoff edges* | turn each edge set on or off |
+| *bond scale*, *cutoff* menus | choose the value of the bond rule and of the cutoff rule (shown when you pass several values) |
+| *lifting* menu | switch between the liftings of the models you passed, or *no lifting* |
+| *lifted graph* menu | choose whether the lifting is computed on the **bond graph** or on the **cutoff graph** |
+
+Click an entry in the legend to hide or show one trace (for example only the triangles); drag to rotate, scroll to zoom, hover for atom information.
+
+| Feature | How |
+|---|---|
+| Atom color | one color per element (Jmol colors), legend entry per element with atomic number and count |
+| Atom size | proportional to the cube root of the atomic number (`atom_size`): H 7 px, C 13 px, heavy metals up to about 30 px |
+| Edge sets | **bond edges** (`bond_scale` × sum of covalent radii; thick, dark) and **cutoff edges** (distance below `cutoff`; thin, light grey), both solid, with their counts in the legend |
+| Liftings | the higher-order cells in **light pink**: filled triangles (rank 2 simplices), tetrahedra (rank 3), rings (cell complexes) or hyperedges |
+| Parameters | `bond_scale` (default 1.3) and `cutoff` (Å, default 5.0): one number, or a list to get a menu in the page (the same as `--bond-scale 1.1 1.3 1.5` / `--cutoff 2 3 5`); the first value is shown at first. Also `edges` (initial view), `size_scale`, `max_cells`, `energy_method`, `target`, `offline` |
+
+The title of each molecule shows the dataset, index, number of atoms and the energy as OpenQDC returns it (QM9 energies carry OpenQDC's unit label, see [The datasets](#the-datasets)). The dataset is downloaded first if it is not cached, and every index is checked before the file is written.
+
+### Liftings
+
+Which lifting a model uses is resolved from the Hydra configs exactly as in a training run (`configs/transforms`, `topobench/utils/openqdc_liftings.py`): the run config is composed with the model and the lifting transforms are instantiated. Only transforms of type *lifting* are applied (feature and positional encodings do not change the structure). **The liftings follow the graph.** Every lifting is computed twice per molecule and per value: on the graph of the bond rule (`bond_scale`) and on the graph of the cutoff rule (`cutoff`), exactly the two `edge_method` choices of the dataset configs, and the *lifted graph* menu selects which one is drawn. A dense cutoff graph produces many cells (QM9 molecule with 15 atoms and a 5 Å cutoff: about 400 triangles and 1100 tetrahedra), so at most `max_cells` (default 3000) cells per rank are drawn and the legend then says *first N of M*; a lifting that finds nothing on a graph (for example the clique complex of benzene's bond graph) says so in the legend.
+
+| Model domain | Default lifting | Drawn in pink |
+|---|---|---|
+| simplicial (`scn`, `san`, `sccn`, ...) | `SimplicialCliqueLifting` | triangles (rank 2) and tetrahedra (rank 3) of the clique complex |
+| cell (`cwn`, `can`, ...) | `CellCycleLifting` | one filled polygon per ring (cycle) |
+| hypergraph (`unignn`, `unignn2`, `alldeepset`, ...) | `HypergraphKHopLifting` | one hyperedge per atom (the atom and its neighbours) as a filled surface, or a line for two atoms |
+| combinatorial (`topotune`) | `GraphTriangleInducedCC` | the cells of rank 2 and higher |
+| graph, `mlp`, `deepset` | none | nothing (the model runs on the plain graph) |
+
+Models that share a lifting share one menu entry (for example `simplicial/scn, simplicial/san`). Atoms, edges (rank 1) are not drawn again by the lifting, since the molecular graph shows them. The filled surfaces are drawing aids: a ring is filled as a fan around its centroid, other cells as their convex hull. If a lifting fails on a molecule, a message is printed and that molecule has no pink structure for it. Molecules without triangles (for example benzene) have an empty clique complex of rank 2, which is correct.
+
 ## Comparing MACE and TopoBench
 
 - Use the **same dataset, energy column, target and `--max-samples` / `--subsample-seed`**. Then both see the same molecules and energies.
@@ -727,7 +793,7 @@ numbers, charges, positions, energy = src.get(
 ```bash
 .venv/bin/python -m pytest test/data/utils/test_openqdc_utils.py \
     test/data/utils/test_openqdc_integrity.py test/data/utils/test_split_concurrency.py \
-    test/utils/test_openqdc_results.py test/data/utils/test_openqdc_split.py -q
+    test/utils/test_openqdc_results.py test/data/utils/test_openqdc_split.py test/utils/test_openqdc_viewer.py -q
 .venv/bin/pre-commit run --files <changed files>     # ruff, ruff-format, numpydoc, yaml, ...
 ```
 

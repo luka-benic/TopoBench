@@ -66,6 +66,7 @@ dependencies=[
     # PyTDC imports pkg_resources; setuptools>=82 dropped it.
     "setuptools>=69,<82",
     "openqdc>=0.1.2",
+    "plotly",
     "mace-torch>=0.3.16",
 ]
 
