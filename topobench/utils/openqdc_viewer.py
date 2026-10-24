@@ -385,7 +385,7 @@ GALLERY_JS = """
 (function () {
   var gd = document.getElementById('{plot_id}');
   var cfg = __CONFIG__;
-  var st = {mol: 0, bonds: cfg.bonds, cutoff: cfg.cutoff, lift: -1, bs: 0, cs: 0, graph: 'bonds'};
+  var st = {mol: 0, bonds: cfg.bonds, cutoff: cfg.cutoff, lift: -1, bs: 0, cs: 0, graph: 'bonds', method: cfg.method};
   var bar = document.createElement('div');
   bar.style.cssText = 'font:14px sans-serif;padding:8px 12px;display:flex;' +
     'flex-wrap:wrap;gap:14px;align-items:center;';
@@ -411,6 +411,9 @@ GALLERY_JS = """
   cfg.bondScales.forEach(function (v, i) { bsSel.appendChild(el('option', {value: i, textContent: v})); });
   var csSel = el('select');
   cfg.cutoffs.forEach(function (v, i) { csSel.appendChild(el('option', {value: i, textContent: v})); });
+  var methSel = el('select');
+  cfg.methods.forEach(function (n, i) { methSel.appendChild(el('option', {value: i, textContent: i + ': ' + n})); });
+  methSel.value = cfg.method;
   var graphSel = el('select');
   graphSel.appendChild(el('option', {value: 'bonds', textContent: 'bond edges'}));
   graphSel.appendChild(el('option', {value: 'radius', textContent: 'cutoff edges'}));
@@ -423,6 +426,7 @@ GALLERY_JS = """
   bar.appendChild(molBox);
   bar.appendChild(label('bond edges', bonds));
   bar.appendChild(label('cutoff edges', cut));
+  if (cfg.methods.length > 1) bar.appendChild(field('energy method', methSel));
   if (cfg.bondScales.length > 1) bar.appendChild(field('bond scale', bsSel));
   if (cfg.cutoffs.length > 1) bar.appendChild(field('cutoff (\u00c5)', csSel));
   if (cfg.liftings.length) {
@@ -431,6 +435,11 @@ GALLERY_JS = """
   }
   gd.parentNode.insertBefore(bar, gd);
 
+  function title() {
+    var e = cfg.energies[st.mol][st.method];
+    return cfg.titles[st.mol] + ', ' + cfg.methods[st.method] + ' ' + cfg.target + ' = ' +
+      (e === null ? 'not computed' : e.toFixed(4) + ' eV');
+  }
   function update() {
     var vis = gd.data.map(function (t) {
       var m = t.meta || {};
@@ -443,7 +452,7 @@ GALLERY_JS = """
       return true;
     });
     Plotly.restyle(gd, {visible: vis});
-    Plotly.relayout(gd, {'title.text': cfg.titles[st.mol]});
+    Plotly.relayout(gd, {'title.text': title()});
     molSel.value = st.mol;
   }
   function go(d) { st.mol = (st.mol + d + cfg.titles.length) % cfg.titles.length; update(); }
@@ -456,6 +465,7 @@ GALLERY_JS = """
   bsSel.onchange = function () { st.bs = +bsSel.value; update(); };
   csSel.onchange = function () { st.cs = +csSel.value; update(); };
   graphSel.onchange = function () { st.graph = graphSel.value; update(); };
+  methSel.onchange = function () { st.method = +methSel.value; update(); };
   document.addEventListener('keydown', function (e) {
     if (e.target.tagName === 'SELECT') return;
     if (e.key === 'ArrowLeft') go(-1);
@@ -681,7 +691,7 @@ def view_molecules(
 
     The page ``<save_dir>/<base_name>.html`` shows one molecule at a time. Above
     the plot you can switch between the molecules (menu, arrows or the left
-    and right keys), turn the bond edges and the cutoff edges on and off, and,
+    and right keys), switch the energy method shown in the title, turn the bond edges and the cutoff edges on and off, and,
     if ``models`` is given, switch between the liftings those TopoBench models
     apply to the molecule. A lifting draws its higher-order cells (simplices,
     cells or hyperedges) in light pink.
@@ -711,7 +721,9 @@ def view_molecules(
         configs as in a training run. Models that run on the plain graph add
         nothing, and models that share a lifting share one menu entry.
     energy_method : int or str
-        Energy column (index or name) shown in the titles.
+        Energy column (index or name) shown at first. The page also holds the
+        energy of every geometry for all the other methods, and a menu
+        switches between them.
     target : str
         ``"energies"`` (total) or ``"formation_energies"``.
     cache_dir : str, optional
@@ -801,19 +813,22 @@ def view_molecules(
     column = resolve_energy_method(
         method_names_for(source.name), energy_method
     )
+    n_methods = len(source.method_names)
     show_bonds = edges in ("both", "bonds")
     show_cutoff = edges in ("both", "radius")
     traces: list[go.BaseTraceType] = []
     titles = []
+    energies = []
     failures = []
     for position, index in enumerate(indices):
-        numbers, _, coords, energy = source.get(index, target, column)
+        numbers, _, coords, _ = source.get(index, target, column)
         numbers = np.asarray(numbers, dtype=int)
         coords = np.asarray(coords, dtype=float)
-        titles.append(
-            f"{source.name} #{index}: {len(numbers)} atoms, "
-            f"{source.method_names[column]} {target} = {energy:.4f} eV"
-        )
+        titles.append(f"{source.name} #{index}: {len(numbers)} atoms")
+        # The energy of this geometry for every method; the page switches
+        # between them.
+        values = [source.get(index, target, c)[3] for c in range(n_methods)]
+        energies.append([float(v) if np.isfinite(v) else None for v in values])
         first = position == 0
         for trace in _molecule_traces(
             numbers, coords, bond_scales[0], cutoffs[0], size_scale, "none"
@@ -895,7 +910,7 @@ def view_molecules(
 
     fig = go.Figure(traces)
     fig.update_layout(
-        title={"text": titles[0], "x": 0.02},
+        title={"text": "", "x": 0.02},
         scene={
             "aspectmode": "data",
             "xaxis": {"title": "x (Å)"},
@@ -908,6 +923,10 @@ def view_molecules(
     )
     config = {
         "titles": titles,
+        "methods": list(source.method_names),
+        "method": column,
+        "energies": energies,
+        "target": target,
         "liftings": [g["label"] for g in group_list],
         "bonds": show_bonds,
         "cutoff": show_cutoff,

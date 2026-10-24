@@ -725,6 +725,7 @@ python -m topobench.utils.openqdc_viewer --dataset QM9 --indices 3 17 1234 \
 |---|---|
 | ◀ menu ▶ (or the left/right keys) | switch between the molecules you passed |
 | *bond edges*, *cutoff edges* | turn each edge set on or off |
+| *energy method* menu | switch the energy shown in the title between all the energy columns of the dataset (for the current geometry) |
 | *bond scale*, *cutoff* menus | choose the value of the bond rule and of the cutoff rule (shown when you pass several values) |
 | *lifting* menu | switch between the liftings of the models you passed, or *no lifting* |
 | *lifted graph* menu | choose whether the lifting is computed on the **bond graph** or on the **cutoff graph** |
@@ -739,7 +740,7 @@ Click an entry in the legend to hide or show one trace (for example only the tri
 | Liftings | the higher-order cells in **light pink**: filled triangles (rank 2 simplices), tetrahedra (rank 3), rings (cell complexes) or hyperedges |
 | Parameters | `bond_scale` (default 1.3) and `cutoff` (Å, default 5.0): one number, or a list to get a menu in the page (the same as `--bond-scale 1.1 1.3 1.5` / `--cutoff 2 3 5`); the first value is shown at first. Also `edges` (initial view), `size_scale`, `max_cells`, `energy_method`, `target`, `offline` |
 
-The title of each molecule shows the dataset, index, number of atoms and the energy as OpenQDC returns it (QM9 energies carry OpenQDC's unit label, see [The datasets](#the-datasets)). The dataset is downloaded first if it is not cached, and every index is checked before the file is written.
+The title shows the dataset, the molecule index, the number of atoms and the energy of that geometry for the selected energy method, as OpenQDC returns it (QM9 energies carry OpenQDC's unit label, see [The datasets](#the-datasets)). The page stores the energies of **every** energy column for every molecule, so the *energy method* menu switches between them without rereading anything; `energy_method` (index or name, default 0; `--energy-method`) only chooses which one is shown first, and a column that was not computed for a geometry shows *not computed*. The dataset is downloaded first if it is not cached, and every index is checked before the file is written.
 
 ### Liftings
 

@@ -272,3 +272,24 @@ def test_value_lists_must_be_distinct_and_positive():
     for bad in ([], [1.0, 1.0], [0.0], -1):
         with pytest.raises(ValueError):
             _as_values(bad, "x")
+
+
+def test_page_holds_the_energy_of_every_method(tmp_path, monkeypatch):
+    class TwoMethods(FakeSource):
+        method_names = ["PBE", "B3LYP"]
+
+        def get(self, i, target, method):
+            energy = [-10.5, float("nan")][method]  # B3LYP not computed
+            return np.array(WATER_Z), np.zeros(3), np.array(WATER_POS), energy
+
+    monkeypatch.setattr(
+        "topobench.utils.openqdc_viewer.method_names_for",
+        lambda name: ["PBE", "B3LYP"],
+    )
+    path = view_molecules(
+        TwoMethods(), [0, 1], tmp_path, "m", energy_method="B3LYP"
+    )
+    flat = path.read_text().replace(" ", "")
+    assert '"methods":["PBE","B3LYP"]' in flat
+    assert '"energies":[[-10.5,null],[-10.5,null]]' in flat
+    assert '"method":1' in flat  # B3LYP is shown first, as asked
