@@ -9,8 +9,9 @@ towards the cutoff because of the smooth polynomial envelope.
 This module shows that for real molecules, from the geometry alone: no model
 is built, run or trained. For a chosen centre atom it draws
 
-* the atoms the centre's energy can depend on (its *receptive field*): the
-  atoms within ``L`` hops, coloured by hop;
+* the atoms (coloured by element and sized by atomic number, as in the
+  topology viewer) the centre's energy can depend on (its *receptive field*):
+  the atoms within ``L`` hops, marked by a ring coloured by hop;
 * the radius graph, with the edges faded by MACE's cutoff envelope;
 * the spheres of radius ``r_max`` and ``L * r_max``;
 * a plot of the hop count of every atom against its distance from the centre.
@@ -35,6 +36,7 @@ from typing import Any
 import numpy as np
 import plotly.graph_objects as go
 from ase.data import chemical_symbols
+from ase.data.colors import jmol_colors
 from plotly.subplots import make_subplots
 
 from topobench.utils.openqdc_viewer import atom_size, resolve_molecules
@@ -48,7 +50,7 @@ PAGE_JS = """
 (function () {
   var gd = document.getElementById('{plot_id}');
   var cfg = __CONFIG__;
-  var st = {mol: 0, c: 0, r: cfg.start.r, l: cfg.start.l,
+  var st = {mol: 0, c: 0, r: cfg.start.r, l: cfg.start.l, mode: 'element',
             edges: true, s1: true, s2: true};
   var IDX = {edges: 0, s1: 1, s2: 2, inside: 3, outside: 4, center: 5,
              xy: 6, xyOut: 7, guides: 8};
@@ -104,12 +106,15 @@ PAGE_JS = """
   bar.appendChild(field('centre atom', centerSel));
   bar.appendChild(field('r_max', rSel));
   bar.appendChild(field('layers', lSel));
+  var modeSel = select(['element (ring = hops)', 'hops'], 0,
+    function (v) { st.mode = v === 0 ? 'element' : 'hops'; });
+  bar.appendChild(field('colour by', modeSel));
   bar.appendChild(check('graph edges', true, function (v) { st.edges = v; }));
   bar.appendChild(check('r_max sphere', true, function (v) { st.s1 = v; }));
   bar.appendChild(check('layers \\u00D7 r_max sphere', true, function (v) { st.s2 = v; }));
   var info = el('span'); info.style.cssText = 'color:#555;';
   bar.appendChild(info);
-  var key = el('span'); key.style.cssText = 'display:flex;gap:8px;align-items:center;';
+  var key = el('span'); key.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;';
   bar.appendChild(key);
   gd.parentNode.insertBefore(bar, gd);
 
@@ -127,8 +132,9 @@ PAGE_JS = """
   function update() {
     var m = cfg.mols[st.mol], P = m.pos, N = P.length, c = st.c;
     var r = cfg.rmax[st.r], L = cfg.layers[st.l], hops = m.hops[st.r];
-    var xi = [], yi = [], zi = [], ci = [], si = [], ti = [], di = [];
-    var xo = [], yo = [], zo = [], so = [], to = [], dO = [];
+    var xi = [], yi = [], zi = [], ci = [], ri = [], si = [], ti = [], di = [];
+    var xo = [], yo = [], zo = [], co = [], so = [], to = [], dO = [];
+    var elem = st.mode === 'element';
     var px = [], py = [], pc = [], ox = [], oy = [];
     var nIn = 0, nBonded = 0, far = 0, j, h;
     for (j = 0; j < N; j++) {
@@ -141,10 +147,12 @@ PAGE_JS = """
       if (h >= 1 && h <= L) {
         nIn++; far = Math.max(far, d);
         xi.push(P[j][0]); yi.push(P[j][1]); zi.push(P[j][2]);
-        ci.push(hopColor(h)); si.push(m.size[j]); ti.push(text); di.push(j);
+        ci.push(elem ? m.colors[j] : hopColor(h)); ri.push(elem ? hopColor(h) : '#333333');
+        si.push(m.size[j]); ti.push(text); di.push(j);
         px.push(d); py.push(h); pc.push(hopColor(h));
       } else {
         xo.push(P[j][0]); yo.push(P[j][1]); zo.push(P[j][2]);
+        co.push(elem ? m.colors[j] : cfg.outsideColor);
         so.push(m.size[j]); to.push(text); dO.push(j);
         if (h > L) { ox.push(d); oy.push(h); }
       }
@@ -182,10 +190,12 @@ PAGE_JS = """
     Plotly.restyle(gd, {x: [s1.x], y: [s1.y], z: [s1.z], visible: [on1]}, [IDX.s1]);
     Plotly.restyle(gd, {x: [s2.x], y: [s2.y], z: [s2.z], visible: [on2]}, [IDX.s2]);
     Plotly.restyle(gd, {x: [xi], y: [yi], z: [zi], 'marker.color': [ci], 'marker.size': [si],
+      'marker.line.color': [ri], 'marker.line.width': [3.5],
       text: [ti], customdata: [di]}, [IDX.inside]);
-    Plotly.restyle(gd, {x: [xo], y: [yo], z: [zo], 'marker.size': [so], text: [to],
-      customdata: [dO]}, [IDX.outside]);
+    Plotly.restyle(gd, {x: [xo], y: [yo], z: [zo], 'marker.color': [co], 'marker.size': [so],
+      'marker.opacity': [elem ? 0.5 : 1], text: [to], customdata: [dO]}, [IDX.outside]);
     Plotly.restyle(gd, {x: [[P[c][0]]], y: [[P[c][1]]], z: [[P[c][2]]],
+      'marker.color': [[elem ? m.colors[c] : cfg.centerColor]],
       'marker.size': [[m.size[c] * 1.35]], customdata: [[c]],
       text: [[m.symbols[c] + ' #' + c + ' (centre)']]}, [IDX.center]);
     Plotly.restyle(gd, {x: [px], y: [py], 'marker.color': [pc]}, [IDX.xy]);
@@ -201,15 +211,31 @@ PAGE_JS = """
       ' atoms in the receptive field' + (nIn ? ' (farthest ' + far.toFixed(2) + ' \\u00C5, bound ' +
       (L * r).toFixed(2) + ' \\u00C5)' : '');
     key.innerHTML = '';
-    function swatch(color, text) {
+    function swatch(color, text, ring) {
       var s = el('span'); s.style.cssText = 'display:flex;gap:4px;align-items:center;';
-      var b = el('span'); b.style.cssText = 'width:11px;height:11px;border-radius:50%;background:' +
-        color + ';display:inline-block;';
+      var b = el('span');
+      b.style.cssText = 'width:11px;height:11px;border-radius:50%;display:inline-block;' +
+        (ring ? 'border:3px solid ' + color + ';background:#fff;box-sizing:border-box;'
+              : 'background:' + color + ';border:1px solid #333;box-sizing:border-box;');
       s.appendChild(b); s.appendChild(document.createTextNode(text)); key.appendChild(s);
     }
-    swatch(cfg.centerColor, 'centre');
-    for (var q = 1; q <= L; q++) swatch(hopColor(q), q + (q === 1 ? ' hop' : ' hops'));
-    swatch(cfg.outsideColor, 'outside the receptive field');
+    if (elem) {
+      var counts = {}, order = [];
+      m.symbols.forEach(function (sy, i) {
+        if (!(sy in counts)) { counts[sy] = {n: 0, color: m.colors[i], z: m.z[i]}; order.push(sy); }
+        counts[sy].n++;
+      });
+      order.forEach(function (sy) {
+        swatch(counts[sy].color, sy + ' (Z=' + counts[sy].z + ', n=' + counts[sy].n + ')');
+      });
+      key.appendChild(document.createTextNode('ring:'));
+      for (var q = 1; q <= L; q++) swatch(hopColor(q), q + (q === 1 ? ' hop' : ' hops'), true);
+      swatch(cfg.outsideColor, 'faded: outside the field');
+    } else {
+      swatch(cfg.centerColor, 'centre');
+      for (var q2 = 1; q2 <= L; q2++) swatch(hopColor(q2), q2 + (q2 === 1 ? ' hop' : ' hops'));
+      swatch(cfg.outsideColor, 'outside the receptive field');
+    }
   }
   document.addEventListener('keydown', function (e) {
     if (cfg.mols.length < 2 || e.target.tagName === 'SELECT') return;
@@ -366,6 +392,13 @@ def mace_receptive_field_page(
             {
                 "title": molecule["title"],
                 "symbols": [chemical_symbols[z] for z in numbers],
+                "z": numbers.tolist(),
+                "colors": [
+                    "rgb({},{},{})".format(
+                        *(int(255 * c) for c in jmol_colors[z])
+                    )
+                    for z in numbers
+                ],
                 "pos": pos.tolist(),
                 "size": atom_size(numbers, size_scale).tolist(),
                 "hops": {

@@ -101,3 +101,25 @@ def test_any_lists_work_and_the_first_values_are_shown_first(tmp_path):
     flat = path.read_text().replace(" ", "")
     assert '"rmax":[3.0,2.0,4.0]' in flat and '"layers":[3,1]' in flat
     assert '"start":{"r":0,"l":0}' in flat
+
+
+def test_atoms_are_coloured_by_element_with_the_jmol_colours(tmp_path):
+    text = mace_receptive_field_page(
+        [
+            {
+                "numbers": [6, 8, 1],
+                "positions": [[0, 0, 0], [1.4, 0, 0], [0, 1.0, 0]],
+                "title": "co",
+            }
+        ],
+        tmp_path / "p.html",
+    ).read_text()
+    flat = text.replace(" ", "")
+    # carbon grey, oxygen red, hydrogen white (Jmol), in the order of the atoms
+    assert (
+        '"colors":["rgb(144,144,144)","rgb(255,13,13)","rgb(255,255,255)"]'
+        in flat
+    )
+    assert '"z":[6,8,1]' in flat
+    assert "colourby" in flat.replace("colour by", "colourby")  # the mode menu
+    assert "element (ring = hops)" in text

@@ -817,7 +817,8 @@ The page is written in a few seconds (it only computes hop counts of the radius 
 |---|---|
 | ◀ menu ▶ (or the left/right keys) | switch between the molecules you passed (wraps around; the first atom becomes the centre) |
 | menus: **centre atom**, **r_max**, **layers** | choose what is shown (a click on an atom also makes it the centre); the page offers exactly the values you pass in `--r-max` and `--layers` (defaults 2 3 4 5 6 and 1 2 3 4), and starts with the first of each; order the lists to start elsewhere |
-| atoms | the centre (black, red ring), atoms within `layers` hops of it (coloured by hop: its receptive field), atoms outside it (grey) |
+| atoms | labelled as in the topology viewer: coloured by element (Jmol colours) and sized by atomic number, with the elements, atomic numbers and counts listed above the plot. A **ring** marks the receptive field: atoms within `layers` hops of the centre have a ring coloured by hop (1 hop, 2 hops, ...); atoms outside it are faded; the centre has a red ring |
+| *colour by* menu | `element (ring = hops)` (default) or `hops`, which fills the atoms with the hop colour (centre black, outside grey) instead |
 | graph edges | all pairs closer than `r_max`; the shade follows MACE's polynomial cutoff envelope (dark = full weight, light = fading to 0 at `r_max`) |
 | spheres | radius `r_max` and radius `layers × r_max` (the distance bound of the receptive field) |
 | plot on the right | hop count of every atom against its distance from the centre; dotted lines at `k × r_max` (an atom `k` hops away is always left of the `k`-th line) |
