@@ -80,12 +80,20 @@ if [ "$DEVICE" = "cpu" ] || [ "$DEVICE" = "CPU" ]; then
     TRAINER="cpu"
     THREADS="${THREADS:-8}"
 elif [[ "$DEVICE" =~ ^[0-9]+$ ]]; then
+    # nvidia-smi numbers the GPUs by PCI bus; make CUDA use the same numbering,
+    # so the card checked below is the card used.
+    export CUDA_DEVICE_ORDER=PCI_BUS_ID
     export CUDA_VISIBLE_DEVICES="$DEVICE"
     MACE_DEVICE="cuda"
     TRAINER="gpu"
     THREADS="${THREADS:-1}"
     echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
     if command -v nvidia-smi > /dev/null; then
+        # Fail now, not after the data has been prepared, if the GPU is missing.
+        if ! nvidia-smi -i "$DEVICE" > /dev/null 2>&1; then
+            echo "GPU $DEVICE does not exist (see nvidia-smi)."
+            exit 1
+        fi
         nvidia-smi -i "$DEVICE" --query-gpu=name,memory.used,memory.total --format=csv,noheader || true
         FREE_MB=$(nvidia-smi -i "$DEVICE" --query-gpu=memory.free --format=csv,noheader,nounits 2> /dev/null | head -1 | tr -d ' ' || true)
         MIN_FREE_MB="${MIN_FREE_MB:-4000}"

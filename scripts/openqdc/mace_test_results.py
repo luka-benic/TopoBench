@@ -208,6 +208,7 @@ def save_mace_test_results(
     energy_method: int,
     device: str,
     batch_size: int,
+    seed: int = 0,
 ) -> dict:
     """Evaluate the best MACE model on the test set and save the results.
 
@@ -227,6 +228,8 @@ def save_mace_test_results(
         ``"cuda"`` or ``"cpu"``.
     batch_size : int
         Number of molecules per batch.
+    seed : int
+        Seed of the run; MACE names its log file ``<name>_run-<seed>.log``.
 
     Returns
     -------
@@ -261,12 +264,13 @@ def save_mace_test_results(
         flush=True,
     )
     reported = mace_reported_test_mae(
-        Path(work_dir) / "logs" / f"{name}_run-0.log"
+        Path(work_dir) / "logs" / f"{name}_run-{seed}.log"
     )
     if reported is not None:
         value, per_atom = reported
         ours = saved["metrics"]["mae_per_atom_meV" if per_atom else "mae_meV"]
-        agree = abs(ours - value) <= 0.01 * max(abs(value), 1e-9)
+        # MACE prints one decimal of meV, so allow that rounding as well as 1 %.
+        agree = abs(ours - value) <= max(0.01 * abs(value), 0.1)
         unit = "meV per atom" if per_atom else "meV"
         print(
             f"[results] MACE's own test table: {value:.5g} {unit} "

@@ -24,6 +24,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import uuid
 
 import torch
@@ -115,6 +116,52 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     return p.parse_known_args()
 
 
+def exported_elements(train_xyz: str) -> str | None:
+    """Return the elements of the whole export as a MACE ``--atomic_numbers`` value.
+
+    Parameters
+    ----------
+    train_xyz : str
+        Path of the ``train.xyz`` file of the export.
+
+    Returns
+    -------
+    str or None
+        For example ``"[1, 6, 8]"``; None for an export made before the
+        element list was recorded.
+    """
+    marker = os.path.join(os.path.dirname(train_xyz), "export_args.json")
+    try:
+        with open(marker) as f:
+            numbers = json.load(f).get("atomic_numbers")
+    except (OSError, ValueError):
+        return None
+    return str(list(numbers)) if numbers else None
+
+
+def archive_old_checkpoints(work_dir: str, restarting: bool) -> None:
+    """Move the checkpoints of an earlier run in this folder out of the way.
+
+    MACE loads the checkpoint with the highest epoch at the end of training,
+    and it only deletes checkpoints it wrote itself, so the files of an earlier
+    run in the same folder could be picked as the "best" model of the new run.
+    They are renamed (not deleted).
+
+    Parameters
+    ----------
+    work_dir : str
+        The run folder.
+    restarting : bool
+        True with ``--restart_latest``: the checkpoints are then wanted.
+    """
+    folder = os.path.join(work_dir, "checkpoints")
+    if restarting or not (os.path.isdir(folder) and os.listdir(folder)):
+        return
+    target = f"{folder}_previous_{time.strftime('%Y%m%d_%H%M%S')}"
+    os.rename(folder, target)
+    print(f"Checkpoints of an earlier run moved to {target}")
+
+
 def main() -> None:
     args, extra = parse_args()
     extra = [a for a in extra if a != "--"]
@@ -145,10 +192,12 @@ def main() -> None:
     ]
     # "compute_forces": False keeps these runs apart from older runs that
     # computed forces.
+    # --restart_latest is left out: it continues the run of the same settings,
+    # so it must not move the run to a new folder.
     settings = json.dumps(
         [
             {k: getattr(args, k) for k in keys},
-            extra,
+            [a for a in extra if a != "--restart_latest"],
             {"compute_forces": False},
         ],
         sort_keys=True,
@@ -201,7 +250,15 @@ def main() -> None:
         "--ema_decay=0.99",
     ]
     if args.loss == "huber":
-        cmd.append(f"--huber_delta={args.huber_delta}")
+        # The huber loss also has a stress term (default weight 1): switch it
+        # off so the loss is an energy loss.
+        cmd += [f"--huber_delta={args.huber_delta}", "--stress_weight=0.0"]
+    elements = exported_elements(paths["train"])
+    if elements:
+        # All elements of train, valid and test: MACE builds its element table
+        # from train and valid only, and a test-only element would crash it
+        # after training.
+        cmd.append(f"--atomic_numbers={elements}")
     env = dict(os.environ)
     wandb_run_id = None
     if args.wandb:
@@ -248,38 +305,40 @@ def main() -> None:
             f"Another run is already using {work_dir}. "
             "Give this run its own --name."
         )
-    # Record the molecules of this run's split before training starts.
-    save_mace_split(work_dir, name, paths)
     try:
+        archive_old_checkpoints(work_dir, "--restart_latest" in extra)
+        # Record the molecules of this run's split before training starts.
+        save_mace_split(work_dir, name, paths)
         subprocess.run(cmd, check=True, env=env)
+        print(f"Results, checkpoints and logs in {work_dir}")
+        if not args.no_test_results:
+            # Predictions of the best model on test.xyz: .txt files + plot.
+            saved = save_mace_test_results(
+                work_dir,
+                name,
+                paths["test"],
+                canonical_name(args.dataset),
+                args.energy_method,
+                args.device,
+                args.valid_batch_size,
+                args.seed,
+            )
+            if args.wandb:
+                log_mace_results_to_wandb(
+                    saved,
+                    wandb_run_id,
+                    args.wandb_project,
+                    args.wandb_entity,
+                    os.path.abspath(work_dir),
+                    {
+                        "dataset": canonical_name(args.dataset),
+                        "energy_method": args.energy_method,
+                        "max_samples": args.max_samples,
+                        "target": args.target,
+                    },
+                )
     finally:
         lock.release()
-    print(f"Results, checkpoints and logs in {work_dir}")
-    if not args.no_test_results:
-        # Predictions of the best model on test.xyz: .txt files + parity plot.
-        saved = save_mace_test_results(
-            work_dir,
-            name,
-            paths["test"],
-            canonical_name(args.dataset),
-            args.energy_method,
-            args.device,
-            args.valid_batch_size,
-        )
-        if args.wandb:
-            log_mace_results_to_wandb(
-                saved,
-                wandb_run_id,
-                args.wandb_project,
-                args.wandb_entity,
-                os.path.abspath(work_dir),
-                {
-                    "dataset": canonical_name(args.dataset),
-                    "energy_method": args.energy_method,
-                    "max_samples": args.max_samples,
-                    "target": args.target,
-                },
-            )
 
 
 if __name__ == "__main__":

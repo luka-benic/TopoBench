@@ -39,7 +39,7 @@ from topobench.data.utils.openqdc_utils import (
 )
 
 
-def parse_loader_params(items: list[str]) -> dict[str, Any]:
+def parse_loader_params(items: list[str], bare: bool = True) -> dict[str, Any]:
     """Parse ``key=value`` strings (as in Hydra overrides) into a dict.
 
     Parameters
@@ -48,6 +48,10 @@ def parse_loader_params(items: list[str]) -> dict[str, Any]:
         Strings such as ``"baseline=none"`` or
         ``"dataset.loader.parameters.max_samples=20000"``; other strings are
         ignored.
+    bare : bool
+        Accept keys without a dot (``"baseline=none"``) as loader parameters.
+        Pass False for Hydra overrides, whose root-level keys (``trainer=cpu``,
+        ``seed=1``) are not loader parameters.
 
     Returns
     -------
@@ -60,9 +64,10 @@ def parse_loader_params(items: list[str]) -> dict[str, Any]:
         key, sep, value = item.partition("=")
         if not sep:
             continue
+        key = key.lstrip("+")  # +key / ++key are Hydra's add / force-add
         if key.startswith(prefix):
             key = key[len(prefix) :]
-        elif "." in key:
+        elif "." in key or not bare:
             continue  # an override of something else (model, trainer, ...)
         out[key] = yaml.safe_load(value)
     return out

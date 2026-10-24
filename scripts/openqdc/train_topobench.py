@@ -16,7 +16,9 @@ Examples
 """
 
 import argparse
+import json
 import os
+import re
 import subprocess
 import sys
 
@@ -33,6 +35,25 @@ from topobench.data.utils.openqdc_utils import (
 )
 
 PER_ATOM = "per_atom_formation_energies"
+
+
+def hydra_value(value: object) -> str:
+    """Format a value for a Hydra command-line override.
+
+    Parameters
+    ----------
+    value : object
+        The value; strings with spaces or special characters get quoted.
+
+    Returns
+    -------
+    str
+        The text to put after ``key=``.
+    """
+    text = str(value)
+    if re.fullmatch(r"[A-Za-z0-9_./:-]+", text):
+        return text
+    return json.dumps(text)
 
 
 def main() -> None:
@@ -137,9 +158,13 @@ def main() -> None:
     name = canonical_name(args.dataset)
     os.environ["OPENQDC_CACHE_DIR"] = args.cache_dir
     names = method_names_for(name)
+    # Hydra overrides given after the flags win, as they do in the training
+    # run itself, so the data prepared below is the data the run uses.
+    extra_params = parse_loader_params(extra, bare=False)
     method = None
-    if args.energy_method is not None:
-        method = resolve_energy_method(names, args.energy_method)
+    spec = extra_params.get("energy_method", args.energy_method)
+    if spec is not None:
+        method = resolve_energy_method(names, spec)
     # A new yaml gets the chosen column; an existing yaml keeps its own.
     config = ensure_config(
         name,
@@ -155,17 +180,15 @@ def main() -> None:
 
     # Check that the dataset is downloaded and preprocessed for exactly these
     # settings, and do whatever is missing, before training starts.
-    loader_overrides = parse_loader_params(extra)
-    loader_overrides.update(
-        {
-            "target": args.target,
-            "max_samples": args.max_samples,
-            "subsample_seed": args.subsample_seed,
-            "split_seed": args.split_seed,
-            "valid_fraction": args.valid_fraction,
-            "test_fraction": args.test_fraction,
-        }
-    )
+    loader_overrides = {
+        "target": args.target,
+        "max_samples": args.max_samples,
+        "subsample_seed": args.subsample_seed,
+        "split_seed": args.split_seed,
+        "valid_fraction": args.valid_fraction,
+        "test_fraction": args.test_fraction,
+    }
+    loader_overrides.update(extra_params)
     prepare_topobench(name, args.cache_dir, method, loader_overrides)
 
     params = "dataset.loader.parameters"
@@ -193,15 +216,21 @@ def main() -> None:
             + ([f"n{args.max_samples}"] if args.max_samples else [])
         )
         overrides += [
-            f"logger.wandb.project={args.wandb_project}",
-            f"+logger.wandb.name={run_name}",
+            f"logger.wandb.project={hydra_value(args.wandb_project)}",
+            f"+logger.wandb.name={hydra_value(run_name)}",
         ]
         if args.wandb_entity:
-            overrides.append(f"+logger.wandb.entity={args.wandb_entity}")
+            overrides.append(
+                f"+logger.wandb.entity={hydra_value(args.wandb_entity)}"
+            )
         if args.wandb_group:
-            overrides.append(f"logger.wandb.group={args.wandb_group}")
+            overrides.append(
+                f"logger.wandb.group={hydra_value(args.wandb_group)}"
+            )
         tags = args.wandb_tags or [name, args.model.replace("/", "-")]
-        overrides.append(f"logger.wandb.tags=[{','.join(tags)}]")
+        overrides.append(
+            f"logger.wandb.tags=[{','.join(hydra_value(t) for t in tags)}]"
+        )
     if method is not None:
         overrides.append(f"{params}.energy_method={method}")
     for key, value in [
@@ -223,17 +252,23 @@ def main() -> None:
     for item in extra:
         if item.startswith(f"{params}.target="):
             target = item.split("=", 1)[1]
-    if not args.no_test_results:
-        # Saves per-molecule test predictions (.txt) and a parity plot when
-        # training ends, in <run folder>/test_results.
-        callback = "callbacks.openqdc_test_results"
-        overrides += [
-            f"+{callback}._target_=topobench.callbacks.openqdc_test_results.OpenQDCTestResults",
-            f"+{callback}.dataset={name}",
-            f"+{callback}.model={args.model}",
-            f"+{callback}.energy_method={column}",
-            f"+{callback}.per_atom={str(target == PER_ATOM).lower()}",
-        ]
+    # Always saves the split of the run (when training starts); unless
+    # --no-test-results it also saves the per-molecule test predictions (.txt)
+    # and a parity plot when training ends, in <run folder>/test_results.
+    callback = "callbacks.openqdc_test_results"
+    overrides += [
+        f"+{callback}._target_=topobench.callbacks.openqdc_test_results.OpenQDCTestResults",
+        f"+{callback}.dataset={name}",
+        f"+{callback}.model={args.model}",
+        f"+{callback}.energy_method={column}",
+        f"+{callback}.per_atom={str(target == PER_ATOM).lower()}",
+        f"+{callback}.save_results={str(not args.no_test_results).lower()}",
+    ]
+    if target == PER_ATOM and not any("pooling_type" in a for a in extra):
+        # The target is an intensive per-atom energy: average over the atoms
+        # instead of summing, so the network does not have to learn 1/N.
+        overrides.append("++model.readout.pooling_type=mean")
+        print("Per-atom target: model.readout.pooling_type=mean")
 
     cmd = [sys.executable, "-m", "topobench", *overrides, *extra]
     print(" ".join(cmd))

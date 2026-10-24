@@ -77,20 +77,20 @@ The first run downloads the dataset and preprocesses it; later runs reuse both. 
 | `scripts/openqdc/train_topobench.py` | Prepares the data, then runs `python -m topobench` on an OpenQDC dataset |
 | `scripts/openqdc/train_mace.py` | Prepares the `.xyz` files, then runs `mace_run_train` |
 | `scripts/openqdc/prepare_data.py` | Download and preprocess only (also called by both training scripts) |
-| `scripts/openqdc/export_xyz.py` | The `.xyz` export used by MACE, also usable on its own |
+| `scripts/openqdc/export_xyz.py` | The `.xyz` export used by MACE, also usable on its own ([options](#exporting-the-xyz-files-on-its-own)) |
 | `scripts/openqdc/generate_configs.py` | Writes the dataset yaml files |
 | `configs/dataset/graph/openqdc_<name>.yaml` | One config per dataset (7 in the repo) |
 | `topobench/data/utils/openqdc_utils.py` | Shared loader (`OpenQDCSource`), unit constants, integrity check, locks |
 | `topobench/data/datasets/openqdc_dataset.py` | `OpenQDCDataset`: OpenQDC molecules as PyG graphs |
 | `topobench/data/loaders/graph/openqdc_datasets_loader.py` | `OpenQDCDatasetLoader`, found automatically by TopoBench |
 | `topobench/data/utils/split_utils.py` | `random_splitting`, made safe for concurrent jobs (not used by the OpenQDC configs any more) |
-| `topobench/data/utils/openqdc_utils.py` (`split_molecules`, `split_positions`) | the train/valid/test split shared by TopoBench and MACE |
+| `topobench/data/utils/openqdc_utils.py` (`split_molecules`, `split_positions`, `molecular_edges`) | the train/valid/test split shared by TopoBench and MACE, and the edge rule shared by the dataset and the viewer |
 | `topobench/utils/openqdc_viewer.py`, `openqdc_liftings.py` | Interactive 3D viewer of molecules with their bond and cutoff edges and the liftings of TopoBench models |
 | `topobench/utils/openqdc_results.py` | Metrics, `.txt` writers, `save_split` and the parity plot (shared by both pipelines) |
 | `topobench/callbacks/openqdc_test_results.py` | TopoBench callback that saves `split.txt` when training starts and the test-set predictions when it ends |
 | `scripts/openqdc/mace_test_results.py` | Evaluates the best MACE model on `test.xyz` and saves the same files; `save_mace_split` writes `split.txt` |
 | `scripts/openqdc/run_mace_train.py` | Starts MACE's training for energy-only data: skips the force terms of the loss so forces need not be computed, and makes W&B logging work without forces |
-| `test/data/utils/test_openqdc_*.py`, `test_openqdc_split.py`, `test_split_concurrency.py`, `test/utils/test_openqdc_results.py`, `test/utils/test_openqdc_viewer.py` | Unit tests |
+| `test/data/utils/test_openqdc_*.py`, `test_split_concurrency.py`, `test/utils/test_openqdc_{results,export,mace_launcher,viewer}.py` | Unit tests |
 
 ## Concepts and conventions
 
@@ -112,7 +112,7 @@ A dataset stores **one energy per quantum-chemistry method** for each molecule. 
 |---|---|
 | `energies` (default) | the total energy of the molecule |
 | `formation_energies` | total energy minus the sum of OpenQDC's isolated-atom reference energies |
-| `per_atom_formation_energies` | formation energy divided by the number of atoms (TopoBench only). TopoBench's losses and metrics are then per atom, like MACE's; the saved test-set results are converted back to energies per molecule |
+| `per_atom_formation_energies` | formation energy divided by the number of atoms (TopoBench only). TopoBench's losses and metrics are then per atom, like MACE's, and its readout averages over the atoms (`train_topobench.py` sets `model.readout.pooling_type=mean`, because the default sum pooling would make the network learn the 1/N factor); the saved test-set results are converted back to energies per molecule |
 
 Both pipelines use the **total energy** by default. For datasets without isolated-atom reference energies (QM9, QM8, QM7b) the formation energy equals the total energy, so the choice only matters for the other datasets (for Alchemy, total energies are about -13,000 eV and formation energies about -100 eV). Total energies are large numbers, which is why both pipelines subtract a per-element baseline (see below).
 
@@ -132,9 +132,9 @@ Both pipelines use the **total energy** by default. For datasets without isolate
 
 ### The per-element baseline
 
-Molecular energies are dominated by the energy of the atoms. With `baseline: per_element` (default) TopoBench fits one energy per element by least squares and trains on the remainder `y = energy - sum(count_z * e0_z)`. The fitted values are written to `baseline.json` next to the graphs. The fit uses the **training split only**, exactly like MACE's `--E0s=average` (the same least-squares problem on the same molecules), so both pipelines train on the same quantity, the energy minus the same per-element baseline. This was checked on Alchemy (2000 molecules): the fitted values in `baseline.json` equal MACE's printed `Atomic Energies used` to every digit. MACE's `std_scaling` is a normalisation inside the network and does not change the target. `baseline: none` trains on the raw energy. The default is `none` for datasets whose energies are not total energies (QM8).
+Molecular energies are dominated by the energy of the atoms. With `baseline: per_element` (default) TopoBench fits one energy per element by least squares and trains on the remainder `y = energy - sum(count_z * e0_z)`. The fitted values are written to `baseline.json` next to the graphs. The fit uses the **training split only**, exactly like MACE's `--E0s=average` (the same least-squares problem on the same molecules), so both pipelines train on the same quantity, the energy minus the same per-element baseline. This was checked on Alchemy (2000 molecules): the fitted values in `baseline.json` equal MACE's printed `Atomic Energies used` to every digit. MACE's `std_scaling` is a normalisation inside the network and does not change the target. `baseline: none` trains on the raw energy. The default is `none` for datasets whose energies are not total energies (QM8). This equality with MACE holds for the targets `energies` and `formation_energies`; for `per_atom_formation_energies` TopoBench regresses on atom fractions instead of counts (an intensive target), and `baseline.json` then holds per-atom values.
 
-Because the baseline depends on the split, the split settings (`valid_fraction`, `test_fraction`, `split_seed`) are part of the TopoBench graph folder name (`..._split_v0.1_t0.1_s0`); a different split seed converts the graphs again. All TopoBench models (graph, hypergraph, simplicial, cell) read the same `y` from these graphs, so they all train on the same energies as MACE.
+The TopoBench graph folder is `datasets/graph/openqdc/<Dataset>/<tag>/` with the tag `<target>_m<column>_z<element hash>_b<baseline>[frac]_<bonds1.3 or radius5.0>_n<max_samples or all>_s<subsample seed>_split_v<valid>_t<test>_s<split seed>`, for example `energies_m0_zab12cd_bper_element_bonds1.3_nall_s0_split_v0.1_t0.1_s0`. The column is always written as an index (`3`, `"3"` and its name share one folder), the element hash makes a change of `atom_types` (the width of the node features) use a new folder, and, because the baseline depends on the split, the split settings are part of it: a different split seed converts the graphs again. `baseline.json` and `processed/data.pt` are written to a temporary file first and renamed, so a killed job leaves no truncated cache. All TopoBench models (graph, hypergraph, simplicial, cell) read the same `y` from these graphs, so they all train on the same energies as MACE.
 
 ### What is and is not changed relative to the raw data
 
@@ -153,7 +153,7 @@ Seven datasets have a config in the repo. Any other OpenQDC potential-energy dat
 | Dataset | Molecules | Energy columns | Elements | Notes |
 |---|---|---|---|---|
 | QM9 | 133,885 | 9 (column 0 = U0) | H C N O F | OpenQDC labels the energies hartree but they are kcal/mol (see below). Tested with TopoBench and MACE |
-| MultixcQM9 | 133,631 | 229 | H C N O F | 229 functional/basis-set columns. Tested with TopoBench |
+| MultixcQM9 | 133,631 | 229 | H C N O F | 229 functional/basis-set columns. The values are atomization-type energies (about -4 to -7 eV per atom), not total energies. Tested with TopoBench |
 | QM7 | - | 80 | - | Config is a placeholder: the remote OpenQDC copy contains only zeros, training stops with an error |
 | QM7b | 7,211 | 76 | H C N O S Cl | Same label problem as QM9 |
 | Alchemy | 202,579 | 1 | H C N O F S Cl | Labels look right. Tested with TopoBench and MACE |
@@ -177,7 +177,7 @@ The column is the `energy_method` entry of the dataset yaml. Index and name are 
 Rules:
 
 - **Indices start at 0.** QM9 has 0 to 8, QM7b 0 to 75, MultixcQM9 0 to 228; one-column datasets only have 0.
-- Without a flag, both pipelines use the yaml's value. A flag or variable overrides it **for that run only**; the yaml file is not changed. (The one exception: `--regen-config` together with an explicit column writes that column into the regenerated yaml.)
+- Without a flag, both pipelines use the yaml's value. A flag or variable overrides it **for that run only**; the yaml file is not changed. (The exception: whenever `train_topobench.py` or `prepare_data.py topobench` has to write the yaml, because it is missing, is a `NOT DOWNLOADED` placeholder, or `--regen-config` is given, an explicit column is written into it.)
 - If both `ENERGY_METHOD` and `--energy-method` are given, the flag wins.
 - Names that contain spaces or colons need quotes.
 - An index out of range stops the run with an error that lists the first column names.
@@ -217,8 +217,12 @@ Energies of different columns are on different scales (several Hartree apart); n
 | `cutoff` | `5.0` | Angstrom, used when `edge_method: radius` |
 | `max_samples` | `null` (all) | Random subset of molecules |
 | `subsample_seed` | `0` | Seed of that subset |
+| `valid_fraction`, `test_fraction`, `split_seed` | `0.1`, `0.1`, `0` | Fractions and seed of the shared split, see [Splits](#splits-identical-for-mace-and-topobench) |
+| `data_domain`, `data_type` | `graph`, `openqdc` | Fixed; they build the `data_dir` path |
 
 Other sections: `parameters` (regression task, `mse` loss, `mae` as monitored metric, `num_features`), `split_params` (`split_type: fixed`: the split comes from the dataset, see [Splits](#splits-identical-for-mace-and-topobench)) and `dataloader_params` (batch size 128). Every parameter can be overridden on the command line with `dataset.loader.parameters.<name>=<value>`.
+
+MACE reads `target`, `max_samples`, `subsample_seed`, the split settings and `energy_method` from the same yaml when the flag is not given (a yaml `target` that MACE cannot learn, `per_atom_formation_energies`, stops it with a message). Regenerating the yaml (`--regen-config`) resets hand-edited loader parameters except the energy column.
 
 The `atom_types` list is detected from the data. If a config was written before the data was downloaded it carries a generic element list and a `NOT DOWNLOADED` note; the training script then downloads the dataset and rewrites the file.
 
@@ -226,7 +230,7 @@ The `atom_types` list is detected from the data. If a config was written before 
 
 Every training run starts with a check and does only what is missing, in this order:
 
-1. The **dataset yaml** exists (otherwise it is written, which downloads the data to detect the elements).
+1. For TopoBench only: the **dataset yaml** exists (otherwise it is written, which downloads the data to detect the elements). MACE runs never write the yaml; they only read it if it exists (else the defaults: column 0, split 0.1/0.1/seed 0).
 2. The **OpenQDC data** is downloaded and complete.
 3. The **preprocessed data** exists for exactly these settings: the TopoBench graphs (for TopoBench) or the `.xyz` files (for MACE). Otherwise they are built.
 
@@ -238,7 +242,7 @@ python scripts/openqdc/prepare_data.py topobench --dataset QM9 --loader-param ba
 python scripts/openqdc/prepare_data.py mace --dataset QM9 --max-samples 20000
 ```
 
-`--loader-param KEY=VALUE` (repeatable) sets any other loader parameter of the yaml.
+`--loader-param KEY=VALUE` (repeatable) sets any other loader parameter of the yaml. `prepare_data.py mace` takes the same data flags as `train_mace.py`; `prepare_data.py topobench` also accepts `--split-seed`, `--valid-fraction` and `--test-fraction`.
 
 **Interrupted downloads.** OpenQDC writes its files in place and trusts any file that exists, so a download killed midway used to leave a truncated file and a confusing error. Before every load the files are now checked against each other (sizes, number of atoms, molecules and energies, and that the properties file is complete). If a download was cut off, the partial files are removed (`[repair] ...`) and downloaded again.
 
@@ -259,13 +263,13 @@ Both pipelines use one function, `split_molecules` in `topobench/data/utils/open
 | | TopoBench | MACE |
 |---|---|---|
 | Where | `OpenQDCDataset.split_idx` (`split_type: fixed` in the yaml) | `partition_frames` in `export_xyz.py` |
-| Parameters | `dataset.loader.parameters.{valid_fraction,test_fraction,split_seed}` or `--valid-fraction --test-fraction --split-seed` | the same flags; the default is read from the dataset yaml |
+| Parameters | `dataset.loader.parameters.{valid_fraction,test_fraction,split_seed}` or `--valid-fraction --test-fraction --split-seed` (default from the dataset yaml: 0.1, 0.1, 0) | the same flags; the default is read from the same yaml |
 
 The split settings are part of both folder names (TopoBench graphs: `..._split_v0.1_t0.1_s0`, MACE `.xyz` files: `split_v0.1_t0.1_s0`), because the per-element baseline is fitted on the training split. A new `--split-seed` therefore converts or exports the data again. The baseline is the same for both pipelines, see [The per-element baseline](#the-per-element-baseline).
 
 The split is identical when both runs use the same **dataset, energy column, target, `--max-samples`, `--subsample-seed`** (they decide which molecules exist; molecules without an energy for the column are dropped by both) and split settings. This was checked on Alchemy (2000 molecules): the train, validation and test index sets of the `.xyz` files equal those of TopoBench, and both `test_predictions.txt` files list the same 200 molecules.
 
-**Every run saves its own split.** Before training starts, each run writes `test_results/split.txt` in its own run folder (TopoBench: `logs/train/runs/<timestamp>/`, MACE: `logs/mace_openqdc/<run name>/`). It has one line per molecule, `openqdc_idx` and `train`, `valid` or `test`, plus a `# counts:` header, and loads with `numpy.loadtxt(path, dtype=str)`. The file is written even if the run later stops, and runs never share it. Two runs of the two pipelines on the same settings produce identical files (checked on Alchemy).
+**Every run saves its own split.** Before training starts, each run writes `test_results/split.txt` in its own run folder (TopoBench: `logs/train/runs/<timestamp>_<pid>/`, MACE: `logs/mace_openqdc/<run name>/`). It has one line per molecule, `openqdc_idx` and `train`, `valid` or `test`, plus a `# counts:` header, and loads with `numpy.loadtxt(path, dtype=str)`. The file is written even if the run later stops (also with `--no-test-results`), and runs never share it. Two runs of the two pipelines on the same settings produce identical files (checked on Alchemy).
 
 For several independent splits use different `--split-seed` values (for example 0 to 4) in both scripts. A split that keeps related molecules together (scaffold or conformer groups) would need its own function with the same interface.
 
@@ -276,7 +280,7 @@ python scripts/openqdc/train_topobench.py --dataset QM9 --model graph/gcn --ener
     --max-samples 20000 --epochs 50
 ```
 
-The script prepares the data (see above), then runs `python -m topobench` with the right overrides. Anything after a lone `--` is passed to Hydra unchanged:
+The script prepares the data (see above), then runs `python -m topobench` with the right overrides. Anything after a lone `--` is passed to Hydra unchanged (it comes after the flags, so it wins over them, and the data preparation uses the same values):
 
 ```bash
 python scripts/openqdc/train_topobench.py --dataset QM9 --model graph/gcn -- \
@@ -291,6 +295,7 @@ python scripts/openqdc/train_topobench.py --dataset QM9 --model graph/gcn -- \
 | `--target` | from the yaml (`energies`) | `energies`, `formation_energies` or `per_atom_formation_energies` |
 | `--max-samples` | all | Random subset of molecules (recommended for datasets above ~500k molecules) |
 | `--subsample-seed` | from the yaml | Seed of that subset |
+| `--split-seed`, `--valid-fraction`, `--test-fraction` | from the yaml (0, 0.1, 0.1) | The shared split, see [Splits](#splits-identical-for-mace-and-topobench) |
 | `--epochs` | from the config | `trainer.max_epochs` |
 | `--batch-size` | 128 | Dataloader batch size |
 | `--seed` | from the config | Global seed |
@@ -300,7 +305,7 @@ python scripts/openqdc/train_topobench.py --dataset QM9 --model graph/gcn -- \
 | `--metrics` | `mae mse` | Metrics reported for validation and test, from `mae mse rmse r2` |
 | `--wandb` | off | Log the run to Weights & Biases ([details](#weights--biases-logging)) |
 | `--wandb-project`, `--wandb-entity`, `--wandb-name`, `--wandb-group`, `--wandb-tags` | `$WANDB_PROJECT` or `openqdc`, `$WANDB_ENTITY` or your default, derived, none, dataset and model | Weights & Biases settings, see [Choosing the project](#choosing-the-project) |
-| `--no-test-results` | off | Do not save the test-set predictions and parity plot |
+| `--no-test-results` | off | Do not save the test-set predictions and parity plot (the split of the run is still saved) |
 | `--cache-dir` | see [Where files are saved](#where-files-are-saved) | OpenQDC data location |
 | `--regen-config` | off | Re-detect the elements and rewrite the dataset yaml |
 
@@ -317,7 +322,7 @@ Other model configs should work the same way but were not run.
 
 **Hypergraph, simplicial and cell models.** The OpenQDC molecules are graphs, and TopoBench lifts them to the domain of the model automatically, so these models need no extra setup: `--model hypergraph/unignn2` is enough. The default lift for hypergraph models is `HypergraphKHopLifting` with k=1. Another lift can be chosen after `--`, for example `-- transforms=liftings/graph2hypergraph/knn` (the lift configs are in `configs/transforms/liftings/graph2hypergraph/`). That override is applied, but the kNN lift with `hypergraph/unignn2` crashed on Alchemy with `AssertionError: Edge degrees should be positive`; lifts other than the default are untested on these molecules.
 
-**Metrics.** At the end of training TopoBench loads the best checkpoint and tests it on the validation and the test set, printing `val/...` and `test/...` tables with `loss`, `mae` and `mse`. They are in **eV**, on the baseline-subtracted energy. Run output goes to `logs/train/runs/<timestamp>_<pid>/`. The per-molecule test predictions and a parity plot are saved too, see [Test-set results](#test-set-results-txt-files-and-parity-plots).
+**Metrics.** At the end of training TopoBench loads the best checkpoint and tests it on the validation and the test set, printing `val/...` and `test/...` tables with `loss`, `mae` and `mse`. They are in **eV**, on the baseline-subtracted energy. Run output goes to `logs/train/runs/<timestamp>_<pid>/`. A direct `python -m topobench` run trains on GPU 0 (`trainer/default.yaml`); `sub_openqdc.sh` chooses the device for you, and `--` `trainer.devices=[2]` selects another. The per-molecule test predictions and a parity plot are saved too, see [Test-set results](#test-set-results-txt-files-and-parity-plots).
 
 ## Training MACE
 
@@ -331,12 +336,14 @@ The script prepares the data, exports `train.xyz`, `valid.xyz` and `test.xyz`, t
 python scripts/openqdc/train_mace.py --dataset Alchemy -- --num_channels=128 --max_L=1
 ```
 
+`--num_channels` and `--max_L` replace `--hidden-irreps` and `--max-ell` only as a pair; `--num_channels` alone is silently overridden by `--hidden_irreps`. To change the width, use `--hidden-irreps "128x0e + 128x1o"`.
+
 | Option | Default | Meaning |
 |---|---|---|
 | `--dataset` | required | OpenQDC dataset name |
 | `--energy-method` | from the yaml, else 0 | Energy column, index or name |
-| `--target` | `energies` | `energies` (total energy) or `formation_energies`; written to `REF_energy` in eV |
-| `--max-samples`, `--subsample-seed` | all, 0 | Same molecule selection as TopoBench |
+| `--target` | from the yaml (`energies`) | `energies` (total energy) or `formation_energies`; written to `REF_energy` in eV |
+| `--max-samples`, `--subsample-seed` | from the yaml (all, 0) | Same molecule selection as TopoBench |
 | `--valid-fraction`, `--test-fraction`, `--split-seed` | 0.1, 0.1, 0 | Fractions and seed of the split (same defaults as the yaml, `loader.parameters.valid_fraction/test_fraction/split_seed`; TopoBench uses the same split) |
 | `--allow-non-total` | off | Export datasets whose energies are not total energies (see QM8) |
 | `--epochs`, `--batch-size`, `--valid-batch-size`, `--lr` | 100, 32, 128, 0.01 | Training settings |
@@ -350,10 +357,10 @@ python scripts/openqdc/train_mace.py --dataset Alchemy -- --num_channels=128 --m
 | `--wandb` | off | Log the run to Weights & Biases ([details](#weights--biases-logging)) |
 | `--wandb-project`, `--wandb-entity`, `--wandb-name`, `--wandb-group`, `--wandb-tags` | `$WANDB_PROJECT` or `openqdc`, `$WANDB_ENTITY` or your default, the run name, none, dataset and `MACE` | Weights & Biases settings, see [Choosing the project](#choosing-the-project) |
 | `--no-test-results` | off | Do not save the test-set predictions and parity plot |
-| `--xyz-root`, `--work-dir` | `datasets/openqdc_xyz`, `logs/mace_openqdc` | Where files and runs are saved |
+| `--xyz-root`, `--work-dir`, `--cache-dir` | `datasets/openqdc_xyz`, `logs/mace_openqdc`, as in [Where files are saved](#where-files-are-saved) | Where files and runs are saved, and the OpenQDC data |
 | `--name` | derived | Run name (see below) |
 
-Settings fixed by the script: `--model=MACE`, `--compute_forces=False` (energy only, see below), `--E0s=average` (per-element reference energies fitted on the training set), `--scaling=std_scaling` (the default `rms_forces_scaling` needs forces), `--energy_weight=1.0`, `--forces_weight=0.0`, `--amsgrad`, and `--ema` with decay 0.99.
+Settings fixed by the script: `--atomic_numbers` (every element of the export, so that an element that only occurs in the test file cannot crash the evaluation after training), `--model=MACE`, `--compute_forces=False` (energy only, see below), `--E0s=average` (per-element reference energies fitted on the training set), `--scaling=std_scaling` (the default `rms_forces_scaling` needs forces), `--energy_weight=1.0`, `--forces_weight=0.0`, `--amsgrad`, and `--ema` with decay 0.99.
 
 **The `.xyz` files.** Each frame holds the atoms, positions in Angstrom, `pbc=F`, the energy in `REF_energy` (eV) and the OpenQDC molecule index in `openqdc_index`. No forces are written. `export_args.json` records the exact settings.
 
@@ -362,9 +369,29 @@ Settings fixed by the script: `--model=MACE`, `--compute_forces=False` (energy o
 - MACE's energy losses (`weighted`, `l1l2energyforces`) would still read the predicted forces and crash with `TypeError` when none are computed. `run_mace_train.py` therefore skips the force terms of the loss when no forces were computed. The launcher stops with a message if MACE's loss module does not have the expected functions (it is written for MACE 0.3.x).
 - The log then says `following quantities will be reported: energy`, and the force columns of the tables show `None`.
 
-Measured on a GPU (Alchemy, 3,000 molecules, 4 epochs): 45.7 seconds per epoch instead of 98.6 with forces on (2.2 times faster), with an identical test MAE (1030.0 meV). To compute forces anyway, add `-- --compute_forces=True` (the extra flag overrides the script's). The `huber` loss is the exception: MACE then switches stress computation on by itself, which needs the same gradient, so there is no speed-up (the log reports `energy, stress`).
+Measured on a GPU (Alchemy, 3,000 molecules, 4 epochs): 45.7 seconds per epoch instead of 98.6 with forces on (2.2 times faster), with an identical test MAE (1030.0 meV). To compute forces anyway, add `-- --compute_forces=True` (the extra flag overrides the script's). The `huber` loss is the exception: MACE then switches stress computation on by itself, which needs the same gradient, so there is no speed-up (the log reports `energy, stress`). The script sets `--stress_weight=0.0` for it, so the loss is still only the energy term.
 
-**Run names.** The default run name is `<data settings>_<split settings>_<8-character hash of the model and training settings>`, for example `Alchemy_energies_m0_n2000_s0_split_v0.1_t0.1_s0_4681b105` (`v0.1` is the validation fraction). The same name is used for the run folder and, with `--wandb`, for the W&B run. Runs that differ only in `--lr` or `--hidden-irreps` therefore get their own folder. A second run with **identical** settings refuses to start while the first is active (`Another run is already using ...`); give it its own `--name`.
+**Run names.** The default run name is `<data settings>_<split settings>_<8-character hash of the model and training settings>`, for example `Alchemy_energies_m0_n2000_s0_split_v0.1_t0.1_s0_4681b105` (`v0.1` is the validation fraction). The same name is used for the run folder and, with `--wandb`, for the W&B run. Runs that differ only in `--lr` or `--hidden-irreps` therefore get their own folder. A second run with **identical** settings refuses to start while the first is active (`Another run is already using ...`); give it its own `--name`. A rerun with the same name after the first has finished moves the old `checkpoints/` folder to `checkpoints_previous_<time>/` (nothing is deleted), because MACE would otherwise pick the highest-epoch checkpoint of the old run as "best"; with `-- --restart_latest` the checkpoints are kept and training continues (the flag does not change the run name). Device and `--name` are not part of the hash.
+
+### Exporting the `.xyz` files on its own
+
+`export_xyz.py` (also called by `train_mace.py` and `prepare_data.py mace`) takes the shared data flags:
+
+```bash
+python scripts/openqdc/export_xyz.py --dataset QM9 --energy-method 3 --max-samples 20000
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--dataset` | required | OpenQDC dataset name |
+| `--energy-method`, `--target` | from the yaml, else 0 / `energies` | Energy column and target written to `REF_energy` |
+| `--max-samples`, `--subsample-seed` | from the yaml | Molecule subset |
+| `--valid-fraction`, `--test-fraction`, `--split-seed` | from the yaml (0.1, 0.1, 0) | The shared split |
+| `--allow-non-total` | off | Export datasets whose energies are not total energies (checked on every call, also when the files exist) |
+| `--xyz-root`, `--cache-dir` | `datasets/openqdc_xyz`, see [Where files are saved](#where-files-are-saved) | Output and OpenQDC data folders |
+| `--overwrite` | off | Export again although a complete export exists (done under the export lock) |
+
+`export_args.json`, written last, holds all settings plus `method_name` and the list of elements of the whole export.
 
 ### Test-set metrics in MACE
 
@@ -380,13 +407,13 @@ Where to find the numbers:
 
 | What | Where |
 |---|---|
-| Final train/validation/test tables | printed to the console and saved in `logs/mace_openqdc/<run name>/logs/<run name>_run-0.log` (search for `Error-table on TEST`) |
+| Final train/validation/test tables | printed to the console and saved in `logs/mace_openqdc/<run name>/logs/<run name>_run-<seed>.log` (search for `Error-table on TEST`) |
 | Training and validation metrics per epoch | `logs/mace_openqdc/<run name>/results/<run name>_run-0_train.txt` (one JSON line per entry) |
 | Best model | `logs/mace_openqdc/<run name>/<run name>.model` (and `_compiled.model`) |
 
 MACE's own test numbers exist only in that log. After `mace_run_train` has finished, `train_mace.py` evaluates the best model on `test.xyz` once more and saves the per-molecule predictions, the metrics and a parity plot, see [Test-set results](#test-set-results-txt-files-and-parity-plots); it also checks that its MAE agrees with MACE's table.
 
-MACE saves models, checkpoints and logs in `logs/mace_openqdc/<run name>/`.
+MACE saves models, checkpoints and logs in `logs/mace_openqdc/<run name>/`. The test evaluation of `train_mace.py` runs inside the run lock. MACE's learning-rate scheduler (`ReduceLROnPlateau`, patience 50) is slower than the early stopping (`--patience` 30), so with the defaults the learning rate normally stays at its initial value; TopoBench uses its own optimiser settings from the config. MACE trains in float64 by default (`--dtype`), TopoBench in float32.
 
 ## Choosing the metric and the loss
 
@@ -453,7 +480,7 @@ The `.txt` files are plain text with `#` comment lines at the top (model, datase
 | `prediction_eV` | energy predicted by the model, in eV |
 | `error_eV` | `prediction_eV - reference_eV` |
 
-The energies are per molecule, not per atom. With the default target they are total energies (`--target formation_energies` gives formation energies instead).
+The energies are per molecule, not per atom. With the default target they are total energies (`--target formation_energies` gives formation energies instead; with `per_atom_formation_energies` the per-atom values are multiplied by `n_atoms`, so the files hold formation energies per molecule).
 
 ### `test_metrics.txt`
 
@@ -461,7 +488,7 @@ One `name value` pair per line: `n` (molecules), `mae_eV`, `mae_meV`, `rmse_eV`,
 
 ### The parity plot
 
-Reference energy on the x axis, predicted energy on the y axis (both in eV, same range), with the line `y = x` for a perfect model. The corner shows the number of molecules, MAE, RMSE and R². Up to 3,000 test molecules are drawn as points; above that a density plot is used (molecules per bin, log scale), so the points do not cover each other. Because molecular energies span tens to thousands of eV while the errors are a fraction of an eV, a good model sits very close to the line; use `error_eV` in the `.txt` file for the details.
+Reference energy on the x axis, predicted energy on the y axis (both in eV, same range), with the line `y = x` for a perfect model. The corner shows the number of molecules, MAE, RMSE and R². Fewer than 3,000 test molecules are drawn as points; from 3,000 on a density plot is used (molecules per bin, log scale), so the points do not cover each other. Because molecular energies span tens to thousands of eV while the errors are a fraction of an eV, a good model sits very close to the line; use `error_eV` in the `.txt` file for the details.
 
 ### How the numbers are obtained
 
@@ -499,9 +526,9 @@ scripts/openqdc/sub_openqdc.sh mace 3 --dataset Alchemy --wandb --wandb-project 
 |---|---|---|
 | `--wandb-project` | `$WANDB_PROJECT`, else `openqdc` | Project |
 | `--wandb-entity` | `$WANDB_ENTITY`, else your default | Team or user that owns the project |
-| `--wandb-name` | TopoBench: `<Dataset>_<model>_m<column>[_n<max_samples>]`; MACE: the run name | Run name |
+| `--wandb-name` | TopoBench: `<Dataset>_<model with / as ->_m<column>[_n<max_samples>]`, e.g. `QM9_graph-gcn_m0_n20000`; MACE: the run name | Run name |
 | `--wandb-group` | none | Group (runs of one comparison or sweep) |
-| `--wandb-tags` | TopoBench: dataset and model; MACE: dataset and `MACE` | Tags |
+| `--wandb-tags` | TopoBench: dataset and model (`graph-gcn`); MACE: dataset and `MACE` | Tags (names with spaces or special characters are quoted for Hydra automatically) |
 
 **What is logged**
 
@@ -582,7 +609,7 @@ Only subsets of up to 30,011 molecules have been run so far, so these are estima
 | Alchemy | 202,579 | Energy labels look right: the safest full-dataset test |
 | QM9 | 133,885 | OpenQDC's unit label is wrong (energies about 627 times too large), see [Known limitations](#known-limitations) |
 | QM7b | 7,211 | same label problem as QM9 |
-| MultixcQM9 | 133,631 | unit labels not checked |
+| MultixcQM9 | 133,631 | energies are atomization-type, not total (see [Known limitations](#known-limitations)) |
 | TMQM | 86,665 | unit labels not checked |
 | VQM24 | 1,104,982 | start with a subset (memory, time) |
 
@@ -621,7 +648,7 @@ Everything after the device is passed on to `train_mace.py` or `train_topobench.
 | `MIN_FREE_MB=<n>` | Warn when the chosen GPU has less free memory (default 4000) |
 | `OPENQDC_CACHE_DIR` | Where OpenQDC data is stored |
 
-**GPU numbering.** The number is the CUDA device number. On this machine `CUDA_DEVICE_ORDER=PCI_BUS_ID` is set, so it matches `nvidia-smi`. If that variable is not set in your shell, the numbers can differ on a machine with different GPU types.
+**GPU numbering.** The script sets `CUDA_DEVICE_ORDER=PCI_BUS_ID`, so the number matches `nvidia-smi` (and is checked: a GPU that does not exist stops the script before any data is prepared). For TopoBench the script appends `trainer=<cpu|gpu>` after your arguments, so a `trainer=` override of your own is replaced; for MACE a `--device` of your own wins.
 
 **GPU memory.** The script only warns when the chosen GPU has little free memory; it still starts the job. Several GPUs on this machine have been nearly full, so check `nvidia-smi`.
 
@@ -636,7 +663,8 @@ Jobs for different models, GPUs and energy columns can run at the same time, als
 | TopoBench graph conversion | lock: the first job converts, the others wait and reuse the result |
 | MACE `.xyz` export | lock; an export counts as complete only when `export_args.json` exists |
 | Dataset yaml | lock, and the file is replaced atomically |
-| MACE run folder | name includes a hash of the model and training settings; identical settings refuse to share a folder |
+| MACE run folder | name includes a hash of the model and training settings; identical settings refuse to share a folder (`run.lock`, held during training and the test evaluation) |
+| Cache files (`data.pt`, `baseline.json`, the dataset yaml) | written to a temporary file and renamed |
 
 Locks are released automatically if a job dies. What was tested (always on fresh data): four TopoBench jobs (gcn, gin, gat, scn) on the same dataset and column started together, where exactly one converted the data; two MACE jobs with different learning rates started together, with one export and two run names; two MACE jobs with identical settings, where the second stopped with a clear message; four jobs started together on a dataset that was not downloaded, where exactly one downloaded it; and a download killed midway, which was repaired on the next run.
 
@@ -648,11 +676,11 @@ Not covered: GPU memory (each job needs its own GPU or enough free memory), and 
 |---|---|
 | Downloaded OpenQDC data | `$OPENQDC_CACHE_DIR`, else `<repo>/datasets/openqdc/<dataset>/preprocessed/` (never `~/.cache` unless you set it) |
 | Lock files of the downloads | `<cache>/.<Dataset>.lock`, `<cache>/.<Dataset>.config.lock` |
-| TopoBench graphs | `datasets/graph/openqdc/<Dataset>/<settings>/` (with `processed/data.pt`, `baseline.json`) |
+| TopoBench graphs | `datasets/graph/openqdc/<Dataset>/<tag>/` (tag: see [The per-element baseline](#the-per-element-baseline); with `processed/data.pt`, `baseline.json`, `convert.lock`) |
 | TopoBench runs | `logs/train/runs/<timestamp>_<pid>/` (test-set results and `split.txt` in `test_results/`) |
-| MACE `.xyz` files | `datasets/openqdc_xyz/<settings>/split_v0.1_t0.1_s0/{train,valid,test}.xyz` and `export_args.json` |
+| MACE `.xyz` files | `datasets/openqdc_xyz/<Dataset>_<target>_m<column>_n<N or all>_s<seed>/split_v0.1_t0.1_s0/{train,valid,test}.xyz`, `export_args.json` (settings and the element list) and `export.lock` |
 | Split of each run | `<run folder>/test_results/split.txt` (TopoBench and MACE) |
-| MACE runs | `logs/mace_openqdc/<run name>/` (models, checkpoints, logs, results; test-set results in `test_results/`) |
+| MACE runs | `logs/mace_openqdc/<run name>/` (models, checkpoints, logs, results, `run.lock`; test-set results in `test_results/`) |
 
 `datasets/` and `logs/` are in `.gitignore`. Move the OpenQDC data to another disk with `export OPENQDC_CACHE_DIR=/absolute/path` **before** starting Python (OpenQDC reads the variable when it is imported).
 
@@ -675,7 +703,7 @@ python scripts/openqdc/generate_configs.py --all                        # every 
 | `--download` | Download missing datasets to detect their elements (needs `--datasets`: some datasets are hundreds of GB) |
 | `--cache-dir`, `--out-dir`, `--report` | Cache folder, output folder, json report of the collected metadata |
 
-Datasets that are not downloaded get a placeholder yaml (generic element list, marked `NOT DOWNLOADED`) which is replaced as soon as a training run needs the dataset. To use a dataset that has no config yet, just run a training script with `--dataset <name>`: the config is written and the data downloaded automatically.
+Datasets that are not downloaded get a placeholder yaml (generic element list, marked `NOT DOWNLOADED`) which is replaced as soon as a training run needs the dataset. To use a dataset that has no config yet with TopoBench, just run `train_topobench.py` (or `prepare_data.py topobench`) with `--dataset <name>`: the config is written and the data downloaded automatically. MACE does not need a config.
 
 ## Using the data in Python
 
@@ -696,17 +724,25 @@ numbers, charges, positions, energy = src.get(
 `topobench/utils/openqdc_viewer.py` draws OpenQDC molecules in 3D (interactive Plotly) with the edges both rules produce, and, if you pass TopoBench models, with the higher-order structures their liftings create. The edges come from `molecular_edges` in `openqdc_utils.py`, the function `OpenQDCDataset` itself calls, so the figure shows exactly the graph TopoBench builds.
 
 ```python
-from topobench.utils.openqdc_viewer import view_molecules, view_molecule, view_atoms
+from topobench.utils.openqdc_viewer import (
+    view_molecules,
+    view_molecule,
+    view_atoms,
+)
 
 # One page with several molecules and the liftings of some TopoBench models
 view_molecules(
-    "QM9", [3, 17, 1234], "figures", "qm9",          # -> figures/qm9.html
+    "QM9",
+    [3, 17, 1234],
+    "figures",
+    "qm9",  # -> figures/qm9.html
     models=["simplicial/scn", "cell/cwn", "hypergraph/unignn2"],
-    bond_scale=[1.1, 1.3, 1.5], cutoff=[2.0, 3.0, 5.0],   # lists give menus in the page
+    bond_scale=[1.1, 1.3, 1.5],
+    cutoff=[2.0, 3.0, 5.0],  # lists give menus in the page
 )
 
-view_molecule("QM9", index=1234)                      # one molecule, opens in a browser
-view_atoms(numbers, positions)                        # your own atoms (Angstrom)
+view_molecule("QM9", index=1234)  # one molecule, opens in a browser
+view_atoms(numbers, positions)  # your own atoms (Angstrom)
 ```
 
 On a machine without a browser write the page and open it elsewhere (`--offline` embeds the Plotly library, about 5 MB, so the page also works without internet):
@@ -739,6 +775,7 @@ Click an entry in the legend to hide or show one trace (for example only the tri
 | Edge sets | **bond edges** (`bond_scale` × sum of covalent radii; thick, dark) and **cutoff edges** (distance below `cutoff`; thin, light grey), both solid, with their counts in the legend |
 | Liftings | the higher-order cells in **light pink**: filled triangles (rank 2 simplices), tetrahedra (rank 3), rings (cell complexes) or hyperedges |
 | Parameters | `bond_scale` (default 1.3) and `cutoff` (Å, default 5.0): one number, or a list to get a menu in the page (the same as `--bond-scale 1.1 1.3 1.5` / `--cutoff 2 3 5`); the first value is shown at first. Also `edges` (initial view), `size_scale`, `max_cells`, `energy_method`, `target`, `offline` |
+| Command line | `--dataset`, `--indices` (default 0), `--save-dir` (default `.`), `--base-name` (default `molecule`), `--energy-method`, `--bond-scale`, `--cutoff`, `--edges {both,bonds,radius,none}`, `--models`, `--max-cells`, `--cache-dir`, `--offline` |
 
 The title shows the dataset, the molecule index, the number of atoms and the energy of that geometry for the selected energy method, as OpenQDC returns it (QM9 energies carry OpenQDC's unit label, see [The datasets](#the-datasets)). The page stores the energies of **every** energy column for every molecule, so the *energy method* menu switches between them without rereading anything; `energy_method` (index or name, default 0; `--energy-method`) only chooses which one is shown first, and a column that was not computed for a geometry shows *not computed*. The dataset is downloaded first if it is not cached, and every index is checked before the file is written.
 
@@ -752,7 +789,7 @@ Which lifting a model uses is resolved from the Hydra configs exactly as in a tr
 | cell (`cwn`, `can`, ...) | `CellCycleLifting` | one filled polygon per ring (cycle) |
 | hypergraph (`unignn`, `unignn2`, `alldeepset`, ...) | `HypergraphKHopLifting` | one hyperedge per atom (the atom and its neighbours) as a filled surface, or a line for two atoms |
 | combinatorial (`topotune`) | `GraphTriangleInducedCC` | the cells of rank 2 and higher |
-| graph, `mlp`, `deepset` | none | nothing (the model runs on the plain graph) |
+| graph models, `non_relational/mlp`, `pointcloud/deepset` | none | nothing (the model runs on the plain graph) |
 
 Models that share a lifting share one menu entry (for example `simplicial/scn, simplicial/san`). Atoms, edges (rank 1) are not drawn again by the lifting, since the molecular graph shows them. The filled surfaces are drawing aids: a ring is filled as a fan around its centroid, other cells as their convex hull. If a lifting fails on a molecule, a message is printed and that molecule has no pink structure for it. Molecules without triangles (for example benzene) have an empty clique complex of rank 2, which is correct.
 
@@ -760,7 +797,8 @@ Models that share a lifting share one menu entry (for example `simplicial/scn, s
 
 - Use the **same dataset, energy column, target and `--max-samples` / `--subsample-seed`**. Then both see the same molecules and energies.
 - TopoBench reports eV (`test/mae`), MACE reports meV (`MAE E / meV` in the final test table; 1 eV = 1000 meV). Both are the mean absolute error of the total energy per molecule after removing a per-element baseline, both measured on the best checkpoint (by validation) on a held-out 10% test set.
-- **The splits and the baseline are identical** for the same data settings, see [Splits](#splits-identical-for-mace-and-topobench).
+- **The splits and the baseline are identical** for the same data settings, see [Splits](#splits-identical-for-mace-and-topobench). This was verified end to end on QM9 (column 3, 2,000 molecules) for `graph/gcn`, `hypergraph/unignn2`, `simplicial/scn`, `cell/cwn` and MACE: identical `split.txt`, identical reference energies in the five `test_predictions.txt` files (equal to OpenQDC's values to 5e-7 eV, the precision of the file), and identical per-element baselines (MACE's `Atomic Energies used` equal TopoBench's `baseline.json` to every printed digit).
+- **The inputs differ, as the models do.** MACE sees the element one-hot of each atom and a radius graph (`--r-max`, default 5 Å) built inside the model, and no charge. TopoBench sees the element one-hot plus the formal charge, and the graph of `edge_method` (covalent-radius bonds by default, or a radius graph with `cutoff`); most TopoBench models use only `x` and `edge_index`, not the positions. Use `edge_method: radius` with `cutoff` equal to `--r-max` for the closest graph.
 
 ## Troubleshooting
 
@@ -771,6 +809,7 @@ Models that share a lifting share one menu entry (for example `simplicial/scn, s
 | Everything is downloaded twice | Runs used different cache folders. Set `OPENQDC_CACHE_DIR` once and keep it |
 | MACE refuses a dataset | Its energies are not total energies (e.g. QM8). Pick another dataset, or pass `--allow-non-total` |
 | Errors hundreds of times too large (QM9, QM7b) | OpenQDC's energy-unit label problem (see below) |
+| `Checkpoints of an earlier run moved to ...` (MACE) | A run with the same name existed; its checkpoints were set aside so they cannot be picked as the new best model. Delete the `checkpoints_previous_*` folder when you do not need it |
 | `Another run is already using ...` (MACE) | A run with identical settings is active. Wait, or give the new run its own `--name` |
 | `[wait] ...` | Another job is downloading or preprocessing the same data; the job continues by itself |
 | `[repair] ...` | A previous download was interrupted; it is downloaded again, nothing to do |
@@ -781,10 +820,15 @@ Models that share a lifting share one menu entry (for example `simplicial/scn, s
 ## Known limitations
 
 - **Wrong OpenQDC unit labels (not corrected).** The QM9 and QM7b energies are labelled hartree but the numbers are kcal/mol. Checked on methane: the stored value divided by 627.509 gives -40.4789 Ha, the published QM9 U0. Converted with OpenQDC's eV factor they come out about 627 times too large (QM9 molecule 0: -7,223,240 eV instead of about -11,400 eV), and a quick QM9 run gives errors of hundreds of eV. For QM7b the same factor was found by comparing energies with the sum of free-atom energies. Other datasets may have similar errors that were not checked; compare a molecule you know before trusting a new dataset. Alchemy's labels look right.
+- **Warnings.** Opening QM9, QM7b or MultixcQM9 logs a one-time warning about the caveats described here (`ENERGY_NOTES` in `openqdc_utils.py`); the values themselves are used unchanged.
+- **MultixcQM9** `energies` are atomization-type values (the residual after a per-element fit is under 1 eV, but the numbers are about -4 to -7 eV per atom, not thousands of eV): the default "total energy" target is not a total energy there. Both pipelines train on the same numbers, and the per-element baseline is still a valid linear fit.
 - **QM8** columns are excitation energies, not total energies (MACE refuses it unless `--allow-non-total`), and its positions are labelled bohr but look like Angstrom. **ISO17** positions look like bohr although labelled Angstrom. Neither is corrected, and neither has a config in the repo.
 - **QM7** cannot be used: the remote OpenQDC copy contains only zeros.
 - **Energy-only.** Forces are not used.
 - **The split is random per molecule.** Datasets with many conformers of the same molecule (MD trajectories such as RevMD17, MD22, ISO17) leak between train and test; a grouped or scaffold split would need a different `split_molecules`.
+- **Energies stored as 0 instead of NaN** for a method that was not computed would pass the finite-energy filter as outliers (only NaN is skipped).
+- **Direct `python -m topobench` runs on a fresh dataset** convert and lift under TopoBench's own locks, but the lifted caches of non-graph models (`PreProcessor`) are written without the temporary-file step; a job killed while saving one can leave a truncated cache that has to be deleted by hand. For graph models `PreProcessor` also writes a second, unused copy of the converted data (`<tag>/data.pt`).
+- **TopoBench `train/loss`, `val/loss` and `test/loss`** are logged with batch size 1, so they are an unweighted mean over batches; the MAE/MSE metrics used for checkpoint selection are sample-weighted.
 - **Large datasets** (millions of molecules) are converted in Python and need a lot of time and memory; use `--max-samples` first.
 - A truncated properties file is detected by its last byte only, so a cut-off file could pass by accident with a probability of roughly 1 in 256.
 - A download interrupted midway is repaired by downloading the whole dataset again, not only the broken file.
@@ -794,8 +838,9 @@ Models that share a lifting share one menu entry (for example `simplicial/scn, s
 ```bash
 .venv/bin/python -m pytest test/data/utils/test_openqdc_utils.py \
     test/data/utils/test_openqdc_integrity.py test/data/utils/test_split_concurrency.py \
-    test/utils/test_openqdc_results.py test/data/utils/test_openqdc_split.py test/utils/test_openqdc_viewer.py -q
+    test/utils/test_openqdc_results.py test/data/utils/test_openqdc_split.py test/utils/test_openqdc_viewer.py \
+    test/utils/test_openqdc_export.py test/utils/test_openqdc_mace_launcher.py -q
 .venv/bin/pre-commit run --files <changed files>     # ruff, ruff-format, numpydoc, yaml, ...
 ```
 
-The tests cover the helper functions, the integrity check of downloads, the concurrent creation of splits and the saving of test-set results (`.txt` files and plots); none of them download anything. `.gitignore` ignores `data/` folders, which includes `test/data/`, so new test files there need `git add -f`.
+The tests cover the helper functions, the integrity check of downloads, the concurrent creation of splits, the saving of test-set results (`.txt` files and plots), the MACE export and the launcher patches, the viewer and the liftings; none of them download anything. `.gitignore` ignores `data/` folders, which includes `test/data/`, so new test files there need `git add -f`.

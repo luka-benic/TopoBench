@@ -30,6 +30,7 @@ from generate_configs import (
 from tqdm import tqdm
 
 from topobench.data.utils.openqdc_utils import (
+    NOT_TOTAL_ENERGY,
     PROJECT_ROOT,
     OpenQDCSource,
     canonical_name,
@@ -44,7 +45,17 @@ from topobench.data.utils.openqdc_utils import (
 log = logging.getLogger(__name__)
 ENERGY_KEY = "REF_energy"
 SPLITS = ("train", "valid", "test")
-SPLIT_DEFAULTS = {"valid_fraction": 0.1, "test_fraction": 0.1, "split_seed": 0}
+# Data settings that default to the dataset yaml, so that MACE and TopoBench
+# see the same molecules and target unless told otherwise.
+YAML_DEFAULTS = {
+    "valid_fraction": 0.1,
+    "test_fraction": 0.1,
+    "split_seed": 0,
+    "max_samples": None,
+    "subsample_seed": 0,
+    "target": "energies",
+}
+TARGETS = ("energies", "formation_energies")
 
 
 def add_data_args(p: argparse.ArgumentParser) -> None:
@@ -58,9 +69,10 @@ def add_data_args(p: argparse.ArgumentParser) -> None:
     )
     p.add_argument(
         "--target",
-        default="energies",
-        choices=["energies", "formation_energies"],
-        help="Energy written to REF_energy (eV): energies = total energy",
+        default=None,
+        choices=list(TARGETS),
+        help="Energy written to REF_energy (eV): energies = total energy; "
+        "default: loader.parameters.target of the dataset yaml, else energies",
     )
     p.add_argument(
         "--energy-method",
@@ -68,8 +80,19 @@ def add_data_args(p: argparse.ArgumentParser) -> None:
         help="energy column, index or name; default: the one chosen in the "
         "dataset yaml (loader.parameters.energy_method), else 0",
     )
-    p.add_argument("--max-samples", type=int, default=None)
-    p.add_argument("--subsample-seed", type=int, default=0)
+    p.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="default: loader.parameters.max_samples of the dataset yaml "
+        "(null = all molecules)",
+    )
+    p.add_argument(
+        "--subsample-seed",
+        type=int,
+        default=None,
+        help="default: loader.parameters.subsample_seed of the dataset yaml",
+    )
     p.add_argument(
         "--valid-fraction",
         type=float,
@@ -108,10 +131,16 @@ def resolve_energy_arg(args: argparse.Namespace) -> argparse.Namespace:
     args.energy_method = resolve_energy_method(
         method_names_for(args.dataset), 0 if spec is None else spec
     )
-    for key, default in SPLIT_DEFAULTS.items():
+    for key, default in YAML_DEFAULTS.items():
         if getattr(args, key) is None:
             value = configured_loader_parameter(args.dataset, key)
             setattr(args, key, default if value is None else value)
+    if args.target not in TARGETS:
+        raise SystemExit(
+            f"MACE learns total or formation energies, but target "
+            f"'{args.target}' is set for {args.dataset} in its yaml; pass "
+            f"--target {' or '.join(TARGETS)}."
+        )
     return args
 
 
@@ -139,19 +168,39 @@ def export_marker(args: argparse.Namespace) -> str:
     return os.path.join(xyz_dir(args), "export_args.json")
 
 
-def ensure_export(args: argparse.Namespace) -> dict[str, str]:
+def ensure_export(
+    args: argparse.Namespace, overwrite: bool = False
+) -> dict[str, str]:
     """Return the XYZ paths, exporting first if no complete export exists.
 
     The export runs under a lock, so jobs started together wait for one
     export instead of writing the same files at the same time.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Data arguments with the energy column resolved.
+    overwrite : bool
+        Export again even if a complete export exists.
 
     Returns
     -------
     dict[str, str]
         Paths of the train/valid/test XYZ files.
     """
+    reason = NOT_TOTAL_ENERGY.get(canonical_name(args.dataset))
+    if reason and not args.allow_non_total:
+        # Checked before an existing export is reused too, so a folder made
+        # with --allow-non-total does not bypass the refusal.
+        raise SystemExit(
+            f"{canonical_name(args.dataset)} energies are not total energies "
+            f"({reason}); MACE learns total energies. "
+            "Use --allow-non-total to export anyway."
+        )
     os.makedirs(xyz_dir(args), exist_ok=True)
     with locked(os.path.join(xyz_dir(args), "export.lock"), "XYZ export"):
+        if overwrite and os.path.exists(export_marker(args)):
+            os.remove(export_marker(args))
         if os.path.exists(export_marker(args)):
             print(f"[prepare] {args.dataset}: XYZ files already exported.")
         else:
@@ -267,6 +316,11 @@ def export(args: argparse.Namespace) -> dict[str, str]:
             {
                 **vars(args),
                 "method_name": src.method_names[args.energy_method],
+                # every element of the three files: MACE needs them all in its
+                # element table (a test-only element would crash it)
+                "atomic_numbers": sorted(
+                    {int(z) for a in frames for z in a.numbers}
+                ),
             },
             f,
             indent=2,
@@ -279,10 +333,8 @@ def main() -> None:
     add_data_args(p)
     p.add_argument("--overwrite", action="store_true")
     args = resolve_energy_arg(p.parse_args())
-    if args.overwrite and os.path.exists(export_marker(args)):
-        os.remove(export_marker(args))
-    existed = os.path.exists(export_marker(args))
-    ensure_export(args)
+    existed = os.path.exists(export_marker(args)) and not args.overwrite
+    ensure_export(args, overwrite=args.overwrite)
     if existed:
         print(f"XYZ files already exist in {xyz_dir(args)} (use --overwrite).")
 
