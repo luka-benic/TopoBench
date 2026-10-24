@@ -76,3 +76,41 @@ def test_missing_metric_placeholders_become_none(launcher):
         "valid": {"rmse_e": 0.1, "rmse_f": None},
         "epoch": 3,
     }
+
+
+def test_stale_checkpoints_are_moved_aside_not_deleted(tmp_path):
+    import sys
+
+    sys.path.insert(
+        0, str(Path(__file__).resolve().parents[2] / "scripts" / "openqdc")
+    )
+    from train_mace import archive_old_checkpoints
+
+    folder = tmp_path / "checkpoints"
+    folder.mkdir()
+    (folder / "run_epoch-80.pt").write_text("old")
+    archive_old_checkpoints(str(tmp_path), restarting=True)
+    assert (folder / "run_epoch-80.pt").exists()  # --restart_latest wants them
+    archive_old_checkpoints(str(tmp_path), restarting=False)
+    assert not folder.exists()
+    moved = list(tmp_path.glob("checkpoints_previous_*"))
+    assert (
+        len(moved) == 1 and (moved[0] / "run_epoch-80.pt").read_text() == "old"
+    )
+    archive_old_checkpoints(str(tmp_path), restarting=False)  # nothing to do
+
+
+def test_element_list_of_an_export_is_read_from_its_marker(tmp_path):
+    import json
+    import sys
+
+    sys.path.insert(
+        0, str(Path(__file__).resolve().parents[2] / "scripts" / "openqdc")
+    )
+    from train_mace import exported_elements
+
+    assert exported_elements(str(tmp_path / "train.xyz")) is None  # no marker
+    (tmp_path / "export_args.json").write_text(
+        json.dumps({"atomic_numbers": [1, 6, 9]})
+    )
+    assert exported_elements(str(tmp_path / "train.xyz")) == "[1, 6, 9]"

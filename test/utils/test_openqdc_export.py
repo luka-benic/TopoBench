@@ -40,6 +40,7 @@ def make_args(tmp_path, **overrides):
         "split_seed": 0,
         "xyz_root": str(tmp_path),
         "cache_dir": str(tmp_path / "cache"),
+        "allow_non_total": False,
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -49,7 +50,55 @@ def test_total_energy_is_the_default_target(export_xyz):
     """The shared data arguments default to the total energy."""
     parser = argparse.ArgumentParser()
     export_xyz.add_data_args(parser)
-    assert parser.parse_args(["--dataset", "QM9"]).target == "energies"
+    args = parser.parse_args(["--dataset", "QM9"])
+    assert args.target is None  # not given: the dataset yaml decides
+    assert export_xyz.resolve_energy_arg(args).target == "energies"
+
+
+def test_data_settings_default_to_the_dataset_yaml(export_xyz, monkeypatch):
+    """max_samples, subsample_seed and target come from the yaml like the split."""
+    yaml_values = {"max_samples": 500, "subsample_seed": 3, "split_seed": 2}
+    monkeypatch.setattr(
+        export_xyz,
+        "configured_loader_parameter",
+        lambda name, key: yaml_values.get(key),
+    )
+    parser = argparse.ArgumentParser()
+    export_xyz.add_data_args(parser)
+    args = export_xyz.resolve_energy_arg(
+        parser.parse_args(["--dataset", "QM9", "--split-seed", "7"])
+    )
+    assert (args.max_samples, args.subsample_seed) == (500, 3)
+    assert args.split_seed == 7  # a flag beats the yaml
+    assert (args.valid_fraction, args.target) == (0.1, "energies")
+
+
+def test_yaml_target_that_mace_cannot_learn_is_refused(
+    export_xyz, monkeypatch
+):
+    monkeypatch.setattr(
+        export_xyz,
+        "configured_loader_parameter",
+        lambda name, key: (
+            "per_atom_formation_energies" if key == "target" else None
+        ),
+    )
+    parser = argparse.ArgumentParser()
+    export_xyz.add_data_args(parser)
+    with pytest.raises(SystemExit, match="--target"):
+        export_xyz.resolve_energy_arg(parser.parse_args(["--dataset", "QM9"]))
+
+
+def test_non_total_energies_are_refused_even_for_an_existing_export(
+    export_xyz, tmp_path
+):
+    args = make_args(tmp_path, dataset="QM8")
+    Path(export_xyz.xyz_dir(args)).mkdir(parents=True)
+    Path(export_xyz.export_marker(args)).write_text("{}")  # made earlier
+    with pytest.raises(SystemExit, match="not total energies"):
+        export_xyz.ensure_export(args)
+    args.allow_non_total = True
+    export_xyz.ensure_export(args)  # allowed explicitly: the export is reused
 
 
 def test_export_folder_name_has_no_version_prefix(export_xyz, tmp_path):

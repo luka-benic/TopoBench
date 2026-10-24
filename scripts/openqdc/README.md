@@ -43,10 +43,11 @@ Both pipelines read the data through the same loader, so they see the same molec
 18. [Generating dataset configs](#generating-dataset-configs)
 19. [Using the data in Python](#using-the-data-in-python)
 20. [Viewing molecules, edges and liftings](#viewing-molecules-edges-and-liftings)
-21. [Comparing MACE and TopoBench](#comparing-mace-and-topobench)
-22. [Troubleshooting](#troubleshooting)
-23. [Known limitations](#known-limitations)
-24. [Development: tests and checks](#development-tests-and-checks)
+21. [Visualising MACE's cutoff radius and number of layers](#visualising-maces-cutoff-radius-and-number-of-layers)
+22. [Comparing MACE and TopoBench](#comparing-mace-and-topobench)
+23. [Troubleshooting](#troubleshooting)
+24. [Known limitations](#known-limitations)
+25. [Development: tests and checks](#development-tests-and-checks)
 
 ## Quick start
 
@@ -86,11 +87,12 @@ The first run downloads the dataset and preprocesses it; later runs reuse both. 
 | `topobench/data/utils/split_utils.py` | `random_splitting`, made safe for concurrent jobs (not used by the OpenQDC configs any more) |
 | `topobench/data/utils/openqdc_utils.py` (`split_molecules`, `split_positions`, `molecular_edges`) | the train/valid/test split shared by TopoBench and MACE, and the edge rule shared by the dataset and the viewer |
 | `topobench/utils/openqdc_viewer.py`, `openqdc_liftings.py` | Interactive 3D viewer of molecules with their bond and cutoff edges and the liftings of TopoBench models |
+| `topobench/utils/mace_viewer.py` | Interactive view of MACE's cutoff radius and number of layers (receptive field of an atom), from the geometry alone |
 | `topobench/utils/openqdc_results.py` | Metrics, `.txt` writers, `save_split` and the parity plot (shared by both pipelines) |
 | `topobench/callbacks/openqdc_test_results.py` | TopoBench callback that saves `split.txt` when training starts and the test-set predictions when it ends |
 | `scripts/openqdc/mace_test_results.py` | Evaluates the best MACE model on `test.xyz` and saves the same files; `save_mace_split` writes `split.txt` |
 | `scripts/openqdc/run_mace_train.py` | Starts MACE's training for energy-only data: skips the force terms of the loss so forces need not be computed, and makes W&B logging work without forces |
-| `test/data/utils/test_openqdc_*.py`, `test_split_concurrency.py`, `test/utils/test_openqdc_{results,export,mace_launcher,viewer}.py` | Unit tests |
+| `test/data/utils/test_openqdc_*.py`, `test_split_concurrency.py`, `test/utils/test_openqdc_{results,export,mace_launcher,viewer}.py`, `test/utils/test_mace_viewer.py` | Unit tests |
 
 ## Concepts and conventions
 
@@ -792,6 +794,38 @@ Which lifting a model uses is resolved from the Hydra configs exactly as in a tr
 | graph models, `non_relational/mlp`, `pointcloud/deepset` | none | nothing (the model runs on the plain graph) |
 
 Models that share a lifting share one menu entry (for example `simplicial/scn, simplicial/san`). Atoms, edges (rank 1) are not drawn again by the lifting, since the molecular graph shows them. The filled surfaces are drawing aids: a ring is filled as a fan around its centroid, other cells as their convex hull. If a lifting fails on a molecule, a message is printed and that molecule has no pink structure for it. Molecules without triangles (for example benzene) have an empty clique complex of rank 2, which is correct.
+
+## Visualising MACE's cutoff radius and number of layers
+
+`topobench/utils/mace_viewer.py` shows what a MACE model can "see" of a molecule, **from the geometry alone: no model is built, run or trained** (the module does not import MACE or torch). MACE connects every pair of atoms closer than `r_max` and passes messages along these edges once per interaction layer, so after `L` layers the energy of an atom can depend on the atoms within `L` hops of that graph (never farther than `L × r_max`), and each edge counts less towards the cutoff because of a smooth envelope.
+
+```python
+from topobench.utils.mace_viewer import view_mace_receptive_field
+
+view_mace_receptive_field("QM9", [3, 17], "figures", "qm9_mace",
+                          r_max=[2, 3, 4, 5, 6], layers=[1, 2, 3, 4])   # -> figures/qm9_mace.html
+```
+
+```bash
+python -m topobench.utils.mace_viewer --dataset QM9 --indices 3 17 --save-dir figures \
+    --base-name qm9_mace --r-max 2 3 4 5 6 --layers 1 2 3 4 [--offline]
+```
+
+The page is written in a few seconds (it only computes hop counts of the radius graph) and has one 3D view and one plot:
+
+| Element | Meaning |
+|---|---|
+| ◀ menu ▶ (or the left/right keys) | switch between the molecules you passed (wraps around; the first atom becomes the centre) |
+| menus: **centre atom**, **r_max**, **layers** | choose what is shown (a click on an atom also makes it the centre); the page offers exactly the values you pass in `--r-max` and `--layers` (defaults 2 3 4 5 6 and 1 2 3 4), and starts with the first of each; order the lists to start elsewhere |
+| atoms | the centre (black, red ring), atoms within `layers` hops of it (coloured by hop: its receptive field), atoms outside it (grey) |
+| graph edges | all pairs closer than `r_max`; the shade follows MACE's polynomial cutoff envelope (dark = full weight, light = fading to 0 at `r_max`) |
+| spheres | radius `r_max` and radius `layers × r_max` (the distance bound of the receptive field) |
+| plot on the right | hop count of every atom against its distance from the centre; dotted lines at `k × r_max` (an atom `k` hops away is always left of the `k`-th line) |
+| line above the plot | number of neighbours within `r_max`, atoms in the receptive field, the farthest one and the bound `layers × r_max` |
+
+**Shaded edges.** MACE multiplies the radial features of each edge by a smooth envelope of the distance `d` (a polynomial of exponent 5): 1 at `d = 0` and 0 at `d = r_max`. It makes an edge fade out instead of switching off when an atom crosses the cutoff, which keeps energies and forces continuous. In the page a dark edge has a weight near 1 (short edge) and a light edge is close to `r_max` and hardly used by the model (weight about 0.77 at half of `r_max`, 0.14 at 80 %, 0 at `r_max`). The shade does not change the hop counts: a faded edge still counts as one hop.
+
+The hop counts are exact for MACE's graph; what the page does **not** show is how strongly the model uses each atom, since that depends on the trained weights. The tests check the hop counts on small examples, that an atom `k` hops away is within `k × r_max`, and that the envelope equals the one inside MACE (that last test imports MACE and is skipped without it).
 
 ## Comparing MACE and TopoBench
 

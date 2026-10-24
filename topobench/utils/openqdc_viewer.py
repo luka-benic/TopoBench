@@ -646,6 +646,58 @@ def _lifting_traces(
     return traces
 
 
+def resolve_molecules(
+    dataset: str | OpenQDCSource,
+    indices: Sequence[int],
+    base_name: str,
+    cache_dir: str | None = None,
+) -> tuple[OpenQDCSource, list[int]]:
+    """Open a dataset and check the molecule indices and the file name.
+
+    Parameters
+    ----------
+    dataset : str or OpenQDCSource
+        OpenQDC dataset name or an open source.
+    indices : sequence of int
+        Indices of the molecules to show.
+    base_name : str
+        File name without suffix; must not contain a path.
+    cache_dir : str, optional
+        OpenQDC cache directory; default as in the training scripts.
+
+    Returns
+    -------
+    tuple[OpenQDCSource, list[int]]
+        The source and the indices as a list of ints.
+
+    Raises
+    ------
+    ValueError
+        If the indices are empty or repeated, or ``base_name`` is a path.
+    IndexError
+        If an index is outside the dataset.
+    """
+    indices = [int(i) for i in indices]
+    if not indices:
+        raise ValueError("indices is empty.")
+    if len(set(indices)) != len(indices):
+        raise ValueError("indices contains duplicates.")
+    if not base_name or Path(base_name).name != base_name:
+        raise ValueError("base_name must be a plain file name, not a path.")
+    if isinstance(dataset, str):
+        source = OpenQDCSource(
+            canonical_name(dataset), cache_dir or default_cache_dir()
+        )
+    else:
+        source = dataset
+    bad = [i for i in indices if not 0 <= i < len(source)]
+    if bad:
+        raise IndexError(
+            f"Indices {bad} are outside 0..{len(source) - 1} of {source.name}."
+        )
+    return source, indices
+
+
 def _as_values(value: float | Sequence[float], name: str) -> list[float]:
     """Turn a number or a list of numbers into a list of distinct floats.
 
@@ -760,24 +812,7 @@ def view_molecules(
     cutoffs = _as_values(cutoff, "cutoff")
     if edges not in EDGE_MODES:
         raise ValueError(f"edges must be one of {EDGE_MODES}.")
-    indices = [int(i) for i in indices]
-    if not indices:
-        raise ValueError("indices is empty.")
-    if len(set(indices)) != len(indices):
-        raise ValueError("indices contains duplicates.")
-    if not base_name or Path(base_name).name != base_name:
-        raise ValueError("base_name must be a plain file name, not a path.")
-    if isinstance(dataset, str):
-        source = OpenQDCSource(
-            canonical_name(dataset), cache_dir or default_cache_dir()
-        )
-    else:
-        source = dataset
-    bad = [i for i in indices if not 0 <= i < len(source)]
-    if bad:
-        raise IndexError(
-            f"Indices {bad} are outside 0..{len(source) - 1} of {source.name}."
-        )
+    source, indices = resolve_molecules(dataset, indices, base_name, cache_dir)
 
     # One menu entry per distinct lifting; models that share one are listed
     # together.

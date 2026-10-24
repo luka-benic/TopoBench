@@ -211,4 +211,5 @@ result_BREC/
 uv.lock
 
 # molecule viewer output (openqdc_viewer.py)
-figures/
+figures_tb/
+figures_mace/

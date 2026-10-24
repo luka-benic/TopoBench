@@ -119,3 +119,52 @@ def test_save_split_writes_one_line_per_molecule(tmp_path):
         ["7", "valid"],
         ["3", "test"],
     ]
+
+
+def test_loader_parameter_parsing_ignores_hydra_root_keys():
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(
+        0, str(Path(__file__).resolve().parents[2] / "scripts" / "openqdc")
+    )
+    from prepare_data import parse_loader_params
+
+    items = [
+        "trainer=cpu",
+        "seed=3",
+        "+dataset.loader.parameters.baseline=none",
+        "dataset.loader.parameters.max_samples=100",
+        "model.readout.pooling_type=mean",
+    ]
+    assert parse_loader_params(items, bare=False) == {
+        "baseline": "none",
+        "max_samples": 100,
+    }
+    assert parse_loader_params(["baseline=none"]) == {"baseline": "none"}
+
+
+def test_hydra_values_with_special_characters_are_quoted():
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(
+        0, str(Path(__file__).resolve().parents[2] / "scripts" / "openqdc")
+    )
+    from train_topobench import hydra_value
+
+    assert hydra_value("QM9_gcn-m0") == "QM9_gcn-m0"
+    assert hydra_value("my run, v2") == '"my run, v2"'
+    assert hydra_value("a=b") == '"a=b"'
+
+
+def test_callback_can_save_only_the_split(tmp_path):
+    from topobench.callbacks.openqdc_test_results import OpenQDCTestResults
+
+    callback = OpenQDCTestResults(save_results=False)
+
+    class NoTrainer:  # on_fit_end must return before it touches the trainer
+        def __getattr__(self, name):
+            raise AssertionError(f"touched {name}")
+
+    callback.on_fit_end(NoTrainer(), None)

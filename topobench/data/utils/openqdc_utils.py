@@ -5,6 +5,7 @@ Every dataset is loaded through OpenQDC's own unit conversion
 used as they are. Forces are never read.
 """
 
+import logging
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -22,10 +23,25 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 ENERGY_UNIT = "ev"
 DISTANCE_UNIT = "ang"
 
+log = logging.getLogger(__name__)
+
 # Datasets whose energy columns are not total energies.
 NOT_TOTAL_ENERGY = {
     "QM8": "columns are excitation energies (E1, E2 x CC2/PBE0/PBE0.1/CAM)"
 }
+# Known caveats of the energies as OpenQDC returns them. They are reported as
+# a warning only: the values are used exactly as OpenQDC converts them.
+ENERGY_NOTES = {
+    "QM9": "OpenQDC labels the energies eV but they have the scale of "
+    "kcal/mol converted as if they were Hartree, i.e. about 627.5 times the "
+    "physical eV: every error reported in eV is that much too large",
+    "QM7b": "OpenQDC labels the energies eV but they have the scale of "
+    "kcal/mol converted as if they were Hartree (about 627.5 times the "
+    "physical eV)",
+    "MultixcQM9": "the energy columns are atomization-type energies (about "
+    "-4 to -7 eV per atom), not total energies",
+}
+_NOTED: set[str] = set()
 # Datasets that cannot be used at all.
 UNUSABLE = {"QM7": "remote OpenQDC copy is corrupted (all-zero data)"}
 # Used when a dataset is not downloaded so its elements are unknown.
@@ -460,6 +476,9 @@ class OpenQDCSource:
                 "(corrupted download)."
             )
         self.not_total_reason = NOT_TOTAL_ENERGY.get(self.name)
+        if self.name in ENERGY_NOTES and self.name not in _NOTED:
+            _NOTED.add(self.name)
+            log.warning("%s energies: %s.", self.name, ENERGY_NOTES[self.name])
 
     def __len__(self) -> int:
         """Return the number of molecules.

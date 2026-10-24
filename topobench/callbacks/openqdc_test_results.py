@@ -51,6 +51,9 @@ class OpenQDCTestResults(Callback):
         True if the target is the energy per atom. The saved energies are then
         multiplied by the number of atoms, so that the files hold energies per
         molecule like those of MACE.
+    save_results : bool
+        False to save only the split of the run (``split.txt``) and skip the
+        test predictions, metrics and plot.
     """
 
     def __init__(
@@ -60,6 +63,7 @@ class OpenQDCTestResults(Callback):
         energy_method: int = 0,
         output_dir: str | None = None,
         per_atom: bool = False,
+        save_results: bool = True,
     ) -> None:
         super().__init__()
         self.dataset = dataset
@@ -67,6 +71,7 @@ class OpenQDCTestResults(Callback):
         self.energy_method = energy_method
         self.output_dir = output_dir
         self.per_atom = per_atom
+        self.save_results = save_results
 
     def on_fit_start(
         self, trainer: Trainer, pl_module: LightningModule
@@ -115,6 +120,8 @@ class OpenQDCTestResults(Callback):
         pl_module : LightningModule
             The model; the best checkpoint is loaded into it.
         """
+        if not self.save_results:
+            return
         best = getattr(trainer.checkpoint_callback, "best_model_path", "")
         if not best or not os.path.exists(best):
             log.warning("No best checkpoint found: test results not saved.")

@@ -1,5 +1,6 @@
 """Dataset class for energy-only OpenQDC datasets (QM9, Alchemy, SPICE, ...)."""
 
+import hashlib
 import json
 import logging
 import os
@@ -15,6 +16,7 @@ from tqdm import tqdm
 from topobench.data.utils.openqdc_utils import (
     OpenQDCSource,
     locked,
+    method_names_for,
     molecular_edges,
     resolve_energy_method,
     split_positions,
@@ -94,6 +96,8 @@ class OpenQDCDataset(InMemoryDataset):
         self.valid_fraction = float(opt("valid_fraction", 0.1))
         self.test_fraction = float(opt("test_fraction", 0.1))
         self.split_seed = int(opt("split_seed", 0))
+        if self.max_samples is not None and int(self.max_samples) < 1:
+            raise ValueError("max_samples must be at least 1 (or null).")
         if self.target not in self.TARGETS:
             raise ValueError(f"target must be one of {self.TARGETS}.")
         if self.edge_method not in ("bonds", "radius"):
@@ -156,10 +160,19 @@ class OpenQDCDataset(InMemoryDataset):
             if self.edge_method == "bonds"
             else f"radius{self.cutoff}"
         )
+        # The column as an index (int, "3" and its name are one cache) and the
+        # element list (it sets the width of the node features).
+        column = resolve_energy_method(
+            method_names_for(self.name), self.energy_method
+        )
+        elements = hashlib.md5(
+            ",".join(map(str, self.atom_types)).encode()
+        ).hexdigest()[:6]
         return "_".join(
             [
                 self.target,
-                f"m{self.energy_method}",
+                f"m{column}",
+                f"z{elements}",
                 # per-atom targets use atom fractions in the baseline
                 f"b{self.baseline}"
                 + (
@@ -298,6 +311,11 @@ class OpenQDCDataset(InMemoryDataset):
             counts.append(one_hot.sum(0).numpy())
             energies.append(energy)
 
+        if not data_list:
+            raise RuntimeError(
+                f"No molecule of {self.name} has a finite energy in column "
+                f"{method}; nothing to convert."
+            )
         counts = np.stack(counts)
         energies = np.asarray(energies, dtype=np.float64)
         e0 = np.zeros(len(self.atom_types))
@@ -325,7 +343,8 @@ class OpenQDCDataset(InMemoryDataset):
             d.energy = torch.tensor([energy], dtype=torch.float64)
             d.y = torch.tensor([y], dtype=torch.float32)
 
-        with open(osp.join(self.processed_root, "baseline.json"), "w") as f:
+        baseline_file = osp.join(self.processed_root, "baseline.json")
+        with open(baseline_file + ".tmp", "w") as f:
             json.dump(
                 {
                     "unit": "ev",
@@ -338,10 +357,15 @@ class OpenQDCDataset(InMemoryDataset):
                 f,
                 indent=2,
             )
+        os.replace(baseline_file + ".tmp", baseline_file)
 
         self.data, self.slices = self.collate(data_list)
         self._data_list = None  # Reset cache.
+        # Write to a temporary file and rename it: a job killed while saving
+        # must not leave a truncated data.pt that later runs would trust.
+        tmp = self.processed_paths[0] + ".tmp"
         fs.torch_save(
             (self._data.to_dict(), self.slices, {}, self._data.__class__),
-            self.processed_paths[0],
+            tmp,
         )
+        os.replace(tmp, self.processed_paths[0])
