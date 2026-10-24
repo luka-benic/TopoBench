@@ -55,6 +55,33 @@ def config_path(name: str, out_dir: Path = CONFIG_DIR) -> Path:
     return Path(out_dir) / f"openqdc_{canonical_name(name).lower()}.yaml"
 
 
+def configured_loader_parameter(
+    name: str, key: str, out_dir: Path = CONFIG_DIR
+):
+    """Read a ``loader.parameters`` value from the yaml of a dataset.
+
+    Parameters
+    ----------
+    name : str
+        Dataset name.
+    key : str
+        Parameter name.
+    out_dir : Path
+        Directory of the dataset configs.
+
+    Returns
+    -------
+    Any
+        The value, or None if the dataset has no config yet or the config
+        does not set it.
+    """
+    path = config_path(name, out_dir)
+    if not path.exists():
+        return None
+    cfg = yaml.safe_load(path.read_text())
+    return cfg["loader"]["parameters"].get(key)
+
+
 def configured_energy_method(name: str, out_dir: Path = CONFIG_DIR):
     """Read the energy column chosen in the yaml of a dataset.
 
@@ -140,6 +167,10 @@ def render(info: dict, energy_method: int = 0) -> str:
         "    cutoff: 5.0 # Angstrom, used when edge_method=radius",
         "    max_samples: null",
         "    subsample_seed: 0",
+        "    # Train/valid/test split by OpenQDC index; the MACE scripts use the same one.",
+        "    valid_fraction: 0.1",
+        "    test_fraction: 0.1",
+        "    split_seed: 0",
         "",
         "# Dataset parameters",
         "parameters:",
@@ -156,11 +187,7 @@ def render(info: dict, energy_method: int = 0) -> str:
         "# splits",
         "split_params:",
         "  learning_setting: inductive",
-        "  data_split_dir: ${paths.data_dir}/data_splits/${dataset.loader.parameters.data_name}_m${dataset.loader.parameters.energy_method}_n${dataset.loader.parameters.max_samples}_s${dataset.loader.parameters.subsample_seed}",
-        "  data_seed: 0",
-        "  split_type: random",
-        "  k: 10",
-        "  train_prop: 0.8",
+        "  split_type: fixed # the dataset provides the split (loader.parameters.split_seed)",
         "",
         "# Dataloader parameters",
         "dataloader_params:",

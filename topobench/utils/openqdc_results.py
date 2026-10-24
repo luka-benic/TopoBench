@@ -1,5 +1,6 @@
 """Save test-set predictions of a model as ``.txt`` files and a parity plot."""
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -99,6 +100,46 @@ def write_predictions_txt(
     lines.append("# columns: " + " ".join(names))
     lines += [" ".join(row) for row in zip(*text_columns, strict=True)]
     Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def save_split(
+    directory: str | Path, split_ids: dict[str, Any], header: list[str]
+) -> Path:
+    """Write the molecules of each split of a run to ``split.txt``.
+
+    The file has one line per molecule, ``openqdc_idx`` and the name of its
+    split (``train``, ``valid`` or ``test``), and loads with
+    ``numpy.loadtxt(path, dtype=str)``.
+
+    Parameters
+    ----------
+    directory : str or Path
+        Folder that receives ``split.txt`` (created if missing).
+    split_ids : dict[str, array-like]
+        Split name to the OpenQDC indices of its molecules.
+    header : list[str]
+        Comment lines written at the top of the file.
+
+    Returns
+    -------
+    Path
+        The written file.
+    """
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    lines = [f"# {line}" for line in header]
+    lines.append(
+        "# counts: "
+        + " ".join(f"{name}={len(ids)}" for name, ids in split_ids.items())
+    )
+    lines.append("# columns: openqdc_idx split")
+    for name, ids in split_ids.items():
+        lines += [f"{int(i)} {name}" for i in ids]
+    path = directory / "split.txt"
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+    return path
 
 
 def write_metrics_txt(
@@ -238,7 +279,8 @@ def log_results_to_wandb(
     """Log saved test-set results to a Weights & Biases run.
 
     The parity plot is logged as an image, the metrics are added to the run
-    summary, and the two ``.txt`` files are uploaded with the run.
+    summary, and the ``.txt`` files (predictions, metrics and the run's ``split.txt``) are
+    uploaded with the run.
 
     Parameters
     ----------
@@ -255,9 +297,12 @@ def log_results_to_wandb(
     run.summary.update(
         {f"{prefix}/{name}": value for name, value in saved["metrics"].items()}
     )
-    for key in ("predictions_file", "metrics_file"):
-        folder = str(Path(saved[key]).parent)
-        run.save(saved[key], base_path=folder, policy="now")
+    folder = Path(saved["predictions_file"]).parent
+    files = [saved["predictions_file"], saved["metrics_file"]]
+    if (folder / "split.txt").exists():  # written by the run before training
+        files.append(folder / "split.txt")
+    for file in files:
+        run.save(str(file), base_path=str(folder), policy="now")
 
 
 def save_test_results(

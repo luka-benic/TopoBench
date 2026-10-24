@@ -9,6 +9,7 @@ import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from filelock import FileLock, Timeout
@@ -133,6 +134,81 @@ def method_names_for(name: str) -> list[str]:
     if names is not None and len(names) == len(methods):
         return [str(n) for n in names]
     return [str(m) for m in methods]
+
+
+def split_molecules(
+    ids: Any,
+    valid_fraction: float = 0.1,
+    test_fraction: float = 0.1,
+    seed: int = 0,
+) -> dict[str, np.ndarray]:
+    """Split molecules into train, validation and test sets by OpenQDC index.
+
+    This is the one split used by both pipelines (TopoBench and MACE). The
+    molecules are identified by their OpenQDC index and sorted first, so the
+    split does not depend on the order in which a pipeline lists them: the same
+    molecules, fractions and seed always give the same split.
+
+    Parameters
+    ----------
+    ids : array-like
+        OpenQDC indices of the molecules to split.
+    valid_fraction : float
+        Fraction of the molecules in the validation set.
+    test_fraction : float
+        Fraction of the molecules in the test set.
+    seed : int
+        Seed of the random permutation.
+
+    Returns
+    -------
+    dict[str, numpy.ndarray]
+        The OpenQDC indices of each split (keys ``train``, ``valid``, ``test``).
+    """
+    ids = np.sort(np.asarray(ids))
+    perm = np.random.default_rng(seed).permutation(len(ids))
+    n_valid = int(valid_fraction * len(ids))
+    n_test = int(test_fraction * len(ids))
+    return {
+        "train": ids[perm[n_valid + n_test :]],
+        "valid": ids[perm[:n_valid]],
+        "test": ids[perm[n_valid : n_valid + n_test]],
+    }
+
+
+def split_positions(
+    ids: Any,
+    valid_fraction: float = 0.1,
+    test_fraction: float = 0.1,
+    seed: int = 0,
+) -> dict[str, np.ndarray]:
+    """Give the split of :func:`split_molecules` as positions in a list.
+
+    Parameters
+    ----------
+    ids : array-like
+        OpenQDC indices of the molecules, in the order of the list.
+    valid_fraction : float
+        Fraction of the molecules in the validation set.
+    test_fraction : float
+        Fraction of the molecules in the test set.
+    seed : int
+        Seed of the random permutation.
+
+    Returns
+    -------
+    dict[str, numpy.ndarray]
+        For each split (``train``, ``valid``, ``test``) the positions in
+        ``ids`` of its molecules.
+    """
+    ids = np.asarray(ids)
+    order = np.argsort(ids)
+    sorted_ids = ids[order]
+    split = split_molecules(ids, valid_fraction, test_fraction, seed)
+    return {
+        name: order[np.searchsorted(sorted_ids, members)]
+        for name, members in split.items()
+    }
 
 
 def resolve_energy_method(names: list[str], spec) -> int:

@@ -98,3 +98,24 @@ def test_log_results_to_wandb_uses_run_api(tmp_path):
     assert "test_results/parity" in run.logged[0]
     assert run.summary_updates["test_results/mae_eV"] == pytest.approx(0.05)
     assert sorted(run.saved) == ["test_metrics.txt", "test_predictions.txt"]
+
+
+def test_save_split_writes_one_line_per_molecule(tmp_path):
+    from topobench.utils.openqdc_results import save_split
+
+    path = save_split(
+        tmp_path / "run",
+        {"train": [5, 1], "valid": [7], "test": [3]},
+        ["a run"],
+    )
+    rows = [
+        line.split()
+        for line in path.read_text().splitlines()
+        if not line.startswith("#")
+    ]
+    assert rows == [
+        ["5", "train"],
+        ["1", "train"],
+        ["7", "valid"],
+        ["3", "test"],
+    ]

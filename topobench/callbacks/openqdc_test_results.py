@@ -13,6 +13,7 @@ from lightning.pytorch.loggers import WandbLogger
 from topobench.data.utils.openqdc_utils import method_names_for
 from topobench.utils.openqdc_results import (
     log_results_to_wandb,
+    save_split,
     save_test_results,
 )
 
@@ -66,6 +67,43 @@ class OpenQDCTestResults(Callback):
         self.energy_method = energy_method
         self.output_dir = output_dir
         self.per_atom = per_atom
+
+    def on_fit_start(
+        self, trainer: Trainer, pl_module: LightningModule
+    ) -> None:
+        """Save the molecules of this run's train, valid and test sets.
+
+        The file ``<output_dir>/test_results/split.txt`` is written before
+        training starts, so every run records its own split even if it stops
+        early.
+
+        Parameters
+        ----------
+        trainer : Trainer
+            The Lightning trainer that is about to fit.
+        pl_module : LightningModule
+            The model (unused).
+        """
+        datamodule = trainer.datamodule
+        split_ids = {}
+        for name, attribute in (
+            ("train", "dataset_train"),
+            ("valid", "dataset_val"),
+            ("test", "dataset_test"),
+        ):
+            graphs = getattr(datamodule, attribute).data_lst
+            split_ids[name] = [int(g.openqdc_idx) for g in graphs]
+        out_dir = Path(self.output_dir or trainer.default_root_dir)
+        path = save_split(
+            out_dir / "test_results",
+            split_ids,
+            [
+                "OpenQDC split of this run",
+                f"model: {self.model}",
+                f"dataset: {self.dataset}",
+            ],
+        )
+        log.info("Split saved to %s", path)
 
     def on_fit_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
         """Run the best checkpoint over the test set and save the results.

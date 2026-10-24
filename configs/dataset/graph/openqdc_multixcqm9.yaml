@@ -253,6 +253,10 @@ loader:
     cutoff: 5.0 # Angstrom, used when edge_method=radius
     max_samples: null
     subsample_seed: 0
+    # Train/valid/test split by OpenQDC index; the MACE scripts use the same one.
+    valid_fraction: 0.1
+    test_fraction: 0.1
+    split_seed: 0
 
 # Dataset parameters
 parameters:
@@ -269,11 +273,7 @@ parameters:
 # splits
 split_params:
   learning_setting: inductive
-  data_split_dir: ${paths.data_dir}/data_splits/${dataset.loader.parameters.data_name}_m${dataset.loader.parameters.energy_method}_n${dataset.loader.parameters.max_samples}_s${dataset.loader.parameters.subsample_seed}
-  data_seed: 0
-  split_type: random
-  k: 10
-  train_prop: 0.8
+  split_type: fixed # the dataset provides the split (loader.parameters.split_seed)
 
 # Dataloader parameters
 dataloader_params:

@@ -36,6 +36,7 @@ from export_xyz import (
 from filelock import FileLock, Timeout
 from mace_test_results import (
     log_mace_results_to_wandb,
+    save_mace_split,
     save_mace_test_results,
 )
 
@@ -247,6 +248,8 @@ def main() -> None:
             f"Another run is already using {work_dir}. "
             "Give this run its own --name."
         )
+    # Record the molecules of this run's split before training starts.
+    save_mace_split(work_dir, name, paths)
     try:
         subprocess.run(cmd, check=True, env=env)
     finally:

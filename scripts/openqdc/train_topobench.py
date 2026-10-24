@@ -62,6 +62,14 @@ def main() -> None:
     )
     p.add_argument("--max-samples", type=int, default=None)
     p.add_argument("--subsample-seed", type=int, default=None)
+    p.add_argument(
+        "--split-seed",
+        type=int,
+        default=None,
+        help="seed of the train/valid/test split (shared with MACE)",
+    )
+    p.add_argument("--valid-fraction", type=float, default=None)
+    p.add_argument("--test-fraction", type=float, default=None)
     p.add_argument("--epochs", type=int, default=None)
     p.add_argument("--batch-size", type=int, default=None)
     p.add_argument("--seed", type=int, default=None)
@@ -153,6 +161,9 @@ def main() -> None:
             "target": args.target,
             "max_samples": args.max_samples,
             "subsample_seed": args.subsample_seed,
+            "split_seed": args.split_seed,
+            "valid_fraction": args.valid_fraction,
+            "test_fraction": args.test_fraction,
         }
     )
     prepare_topobench(name, args.cache_dir, method, loader_overrides)
@@ -197,6 +208,9 @@ def main() -> None:
         (f"{params}.target", args.target),
         (f"{params}.max_samples", args.max_samples),
         (f"{params}.subsample_seed", args.subsample_seed),
+        (f"{params}.split_seed", args.split_seed),
+        (f"{params}.valid_fraction", args.valid_fraction),
+        (f"{params}.test_fraction", args.test_fraction),
         ("trainer.max_epochs", args.epochs),
         ("dataset.dataloader_params.batch_size", args.batch_size),
         ("seed", args.seed),

@@ -21,6 +21,7 @@ from mace.tools import torch_geometric
 from topobench.data.utils.openqdc_utils import method_names_for
 from topobench.utils.openqdc_results import (
     log_results_to_wandb,
+    save_split,
     save_test_results,
 )
 
@@ -88,6 +89,41 @@ def predict_test_set(
         "n_atoms": np.array([len(a) for a in frames]),
         "index": np.array([a.info["openqdc_index"] for a in frames]),
     }
+
+
+def save_mace_split(
+    work_dir: str, name: str, xyz_paths: dict[str, str]
+) -> Path:
+    """Save the molecules of the train, valid and test files of a MACE run.
+
+    Parameters
+    ----------
+    work_dir : str
+        MACE run folder; ``split.txt`` goes to ``<work_dir>/test_results``.
+    name : str
+        MACE run name, used in the file header.
+    xyz_paths : dict[str, str]
+        Paths of the ``train``, ``valid`` and ``test`` ``.xyz`` files.
+
+    Returns
+    -------
+    Path
+        The written file.
+    """
+    split_ids = {
+        split: [
+            int(i)
+            for i in re.findall(
+                r"openqdc_index=(\d+)", Path(xyz_paths[split]).read_text()
+            )
+        ]
+        for split in ("train", "valid", "test")
+    }
+    return save_split(
+        Path(work_dir) / "test_results",
+        split_ids,
+        ["OpenQDC split of this run", "model: MACE", f"run: {name}"],
+    )
 
 
 def mace_reported_test_mae(log_file: Path) -> tuple[float, bool] | None:

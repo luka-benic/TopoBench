@@ -17,6 +17,7 @@ from topobench.data.utils.openqdc_utils import (
     OpenQDCSource,
     locked,
     resolve_energy_method,
+    split_positions,
 )
 
 log = logging.getLogger(__name__)
@@ -90,6 +91,9 @@ class OpenQDCDataset(InMemoryDataset):
         self.cutoff = float(opt("cutoff", 5.0))
         self.max_samples = opt("max_samples")
         self.subsample_seed = int(opt("subsample_seed", 0))
+        self.valid_fraction = float(opt("valid_fraction", 0.1))
+        self.test_fraction = float(opt("test_fraction", 0.1))
+        self.split_seed = int(opt("split_seed", 0))
         if self.target not in self.TARGETS:
             raise ValueError(f"target must be one of {self.TARGETS}.")
         if self.edge_method not in ("bonds", "radius"):
@@ -109,6 +113,18 @@ class OpenQDCDataset(InMemoryDataset):
         out = fs.torch_load(self.processed_paths[0])
         data, self.slices, self.sizes, data_cls = out
         self.data = data_cls.from_dict(data)
+
+        # The split is the one the MACE pipeline uses (``split_molecules``):
+        # it depends on the OpenQDC indices only, not on the converted graphs.
+        self.split_idx = {
+            k: torch.as_tensor(v)
+            for k, v in split_positions(
+                self._data.openqdc_idx.numpy(),
+                self.valid_fraction,
+                self.test_fraction,
+                self.split_seed,
+            ).items()
+        }
 
     def __repr__(self) -> str:
         return (

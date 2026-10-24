@@ -23,7 +23,10 @@ import os
 import numpy as np
 from ase import Atoms
 from ase.io import write
-from generate_configs import configured_energy_method
+from generate_configs import (
+    configured_energy_method,
+    configured_loader_parameter,
+)
 from tqdm import tqdm
 
 from topobench.data.utils.openqdc_utils import (
@@ -35,11 +38,13 @@ from topobench.data.utils.openqdc_utils import (
     locked,
     method_names_for,
     resolve_energy_method,
+    split_positions,
 )
 
 log = logging.getLogger(__name__)
 ENERGY_KEY = "REF_energy"
 SPLITS = ("train", "valid", "test")
+SPLIT_DEFAULTS = {"valid_fraction": 0.1, "test_fraction": 0.1, "split_seed": 0}
 
 
 def add_data_args(p: argparse.ArgumentParser) -> None:
@@ -65,9 +70,25 @@ def add_data_args(p: argparse.ArgumentParser) -> None:
     )
     p.add_argument("--max-samples", type=int, default=None)
     p.add_argument("--subsample-seed", type=int, default=0)
-    p.add_argument("--valid-fraction", type=float, default=0.1)
-    p.add_argument("--test-fraction", type=float, default=0.1)
-    p.add_argument("--split-seed", type=int, default=0)
+    p.add_argument(
+        "--valid-fraction",
+        type=float,
+        default=None,
+        help="default: loader.parameters.valid_fraction of the dataset yaml",
+    )
+    p.add_argument(
+        "--test-fraction",
+        type=float,
+        default=None,
+        help="default: loader.parameters.test_fraction of the dataset yaml",
+    )
+    p.add_argument(
+        "--split-seed",
+        type=int,
+        default=None,
+        help="default: loader.parameters.split_seed of the dataset yaml; "
+        "TopoBench uses the same split",
+    )
     p.add_argument(
         "--allow-non-total",
         action="store_true",
@@ -87,6 +108,10 @@ def resolve_energy_arg(args: argparse.Namespace) -> argparse.Namespace:
     args.energy_method = resolve_energy_method(
         method_names_for(args.dataset), 0 if spec is None else spec
     )
+    for key, default in SPLIT_DEFAULTS.items():
+        if getattr(args, key) is None:
+            value = configured_loader_parameter(args.dataset, key)
+            setattr(args, key, default if value is None else value)
     return args
 
 
@@ -149,6 +174,38 @@ def xyz_paths(args: argparse.Namespace) -> dict[str, str]:
     return {s: os.path.join(xyz_dir(args), f"{s}.xyz") for s in SPLITS}
 
 
+def partition_frames(
+    frames: list[Atoms],
+    valid_fraction: float,
+    test_fraction: float,
+    split_seed: int,
+) -> dict[str, np.ndarray]:
+    """Split frames with the split TopoBench uses (``split_molecules``).
+
+    Parameters
+    ----------
+    frames : list[ase.Atoms]
+        Frames with ``info["openqdc_index"]``.
+    valid_fraction : float
+        Fraction of the frames in the validation set.
+    test_fraction : float
+        Fraction of the frames in the test set.
+    split_seed : int
+        Seed of the split.
+
+    Returns
+    -------
+    dict[str, numpy.ndarray]
+        The positions in ``frames`` of each split.
+    """
+    return split_positions(
+        [a.info["openqdc_index"] for a in frames],
+        valid_fraction,
+        test_fraction,
+        split_seed,
+    )
+
+
 def export(args: argparse.Namespace) -> dict[str, str]:
     """Read OpenQDC, split it and write the XYZ files.
 
@@ -196,14 +253,9 @@ def export(args: argparse.Namespace) -> dict[str, str]:
         atoms.info["openqdc_index"] = int(i)
         frames.append(atoms)
 
-    perm = np.random.default_rng(args.split_seed).permutation(len(frames))
-    n_valid = int(args.valid_fraction * len(frames))
-    n_test = int(args.test_fraction * len(frames))
-    split_idx = {
-        "valid": perm[:n_valid],
-        "test": perm[n_valid : n_valid + n_test],
-        "train": perm[n_valid + n_test :],
-    }
+    split_idx = partition_frames(
+        frames, args.valid_fraction, args.test_fraction, args.split_seed
+    )
 
     paths = xyz_paths(args)
     os.makedirs(xyz_dir(args), exist_ok=True)
