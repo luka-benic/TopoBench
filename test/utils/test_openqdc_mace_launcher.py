@@ -100,17 +100,41 @@ def test_stale_checkpoints_are_moved_aside_not_deleted(tmp_path):
     archive_old_checkpoints(str(tmp_path), restarting=False)  # nothing to do
 
 
-def test_element_list_of_an_export_is_read_from_its_marker(tmp_path):
+def test_elements_of_an_export_come_from_its_marker_or_the_files(tmp_path):
     import json
     import sys
 
     sys.path.insert(
         0, str(Path(__file__).resolve().parents[2] / "scripts" / "openqdc")
     )
-    from train_mace import exported_elements
+    from ase import Atoms
+    from ase.io import write
+    from train_mace import export_elements
 
-    assert exported_elements(str(tmp_path / "train.xyz")) is None  # no marker
-    (tmp_path / "export_args.json").write_text(
-        json.dumps({"atomic_numbers": [1, 6, 9]})
+    paths = {k: str(tmp_path / f"{k}.xyz") for k in ("train", "valid", "test")}
+    write(
+        paths["train"],
+        [Atoms("H2O", positions=[[0, 0, 0], [1, 0, 0], [0, 1, 0]])],
     )
-    assert exported_elements(str(tmp_path / "train.xyz")) == "[1, 6, 9]"
+    write(paths["valid"], [Atoms("CH", positions=[[0, 0, 0], [1, 0, 0]])])
+    write(paths["test"], [Atoms("N", positions=[[0, 0, 0]])])
+    assert export_elements(paths) == [1, 6, 7, 8]  # no marker: read the files
+    (tmp_path / "export_args.json").write_text(
+        json.dumps({"atomic_numbers": [9, 1, 6]})
+    )
+    assert export_elements(paths) == [1, 6, 9]  # the marker wins
+
+
+def test_baseline_choice_sets_the_e0s_of_mace(tmp_path):
+    import ast
+    import sys
+
+    sys.path.insert(
+        0, str(Path(__file__).resolve().parents[2] / "scripts" / "openqdc")
+    )
+    from train_mace import e0s_argument
+
+    assert e0s_argument("per_element", [1, 6]) == "--E0s=average"
+    none = e0s_argument("none", [1, 6, 8])
+    assert none.startswith("--E0s=")
+    assert ast.literal_eval(none[len("--E0s=") :]) == {1: 0.0, 6: 0.0, 8: 0.0}

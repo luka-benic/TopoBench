@@ -84,6 +84,14 @@ def main() -> None:
     p.add_argument("--max-samples", type=int, default=None)
     p.add_argument("--subsample-seed", type=int, default=None)
     p.add_argument(
+        "--baseline",
+        choices=["none", "per_element"],
+        default=None,
+        help="none: train on the raw energy; per_element: subtract per-element "
+        "energies fitted on the training split. Default: the dataset yaml "
+        "(none).",
+    )
+    p.add_argument(
         "--split-seed",
         type=int,
         default=None,
@@ -184,6 +192,7 @@ def main() -> None:
         "target": args.target,
         "max_samples": args.max_samples,
         "subsample_seed": args.subsample_seed,
+        "baseline": args.baseline,
         "split_seed": args.split_seed,
         "valid_fraction": args.valid_fraction,
         "test_fraction": args.test_fraction,
@@ -237,6 +246,7 @@ def main() -> None:
         (f"{params}.target", args.target),
         (f"{params}.max_samples", args.max_samples),
         (f"{params}.subsample_seed", args.subsample_seed),
+        (f"{params}.baseline", args.baseline),
         (f"{params}.split_seed", args.split_seed),
         (f"{params}.valid_fraction", args.valid_fraction),
         (f"{params}.test_fraction", args.test_fraction),

@@ -35,6 +35,7 @@ from export_xyz import (
     resolve_energy_arg,
 )
 from filelock import FileLock, Timeout
+from generate_configs import configured_loader_parameter
 from mace_test_results import (
     log_mace_results_to_wandb,
     save_mace_split,
@@ -68,6 +69,14 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
         "--device", default="cuda" if torch.cuda.is_available() else "cpu"
     )
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument(
+        "--baseline",
+        choices=["none", "per_element"],
+        default=None,
+        help="none: isolated-atom energies E0 = 0, so the model learns the raw "
+        "energy; per_element: E0 fitted on the training split (MACE's "
+        "--E0s=average). Default: the dataset yaml (none).",
+    )
     # Metrics: the loss that is minimised (MACE also picks the best checkpoint
     # by the validation loss) and the error table printed during/after training.
     p.add_argument(
@@ -116,27 +125,60 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     return p.parse_known_args()
 
 
-def exported_elements(train_xyz: str) -> str | None:
-    """Return the elements of the whole export as a MACE ``--atomic_numbers`` value.
+def export_elements(xyz_paths: dict[str, str]) -> list[int]:
+    """Return the atomic numbers occurring in the whole export.
 
     Parameters
     ----------
-    train_xyz : str
-        Path of the ``train.xyz`` file of the export.
+    xyz_paths : dict[str, str]
+        Paths of the ``train``, ``valid`` and ``test`` ``.xyz`` files.
 
     Returns
     -------
-    str or None
-        For example ``"[1, 6, 8]"``; None for an export made before the
-        element list was recorded.
+    list[int]
+        Sorted atomic numbers of train, valid and test together. They are read
+        from ``export_args.json``; for an export made before the list was
+        recorded, the ``.xyz`` files are read.
     """
-    marker = os.path.join(os.path.dirname(train_xyz), "export_args.json")
+    marker = os.path.join(
+        os.path.dirname(xyz_paths["train"]), "export_args.json"
+    )
     try:
         with open(marker) as f:
             numbers = json.load(f).get("atomic_numbers")
     except (OSError, ValueError):
-        return None
-    return str(list(numbers)) if numbers else None
+        numbers = None
+    if numbers:
+        return sorted(int(z) for z in numbers)
+    from ase.io import read
+
+    found: set[int] = set()
+    for path in xyz_paths.values():
+        for atoms in read(path, index=":"):
+            found.update(int(z) for z in atoms.numbers)
+    return sorted(found)
+
+
+def e0s_argument(baseline: str, elements: list[int]) -> str:
+    """Return the ``--E0s`` option of ``mace_run_train`` for a baseline choice.
+
+    Parameters
+    ----------
+    baseline : str
+        ``"per_element"`` fits the isolated-atom energies on the training set
+        (MACE's ``average``); ``"none"`` sets them all to zero, so the model
+        learns the raw energy.
+    elements : list[int]
+        Atomic numbers of the export (all of them need an entry).
+
+    Returns
+    -------
+    str
+        The ``--E0s=...`` command-line option.
+    """
+    if baseline == "per_element":
+        return "--E0s=average"
+    return "--E0s=" + str({int(z): 0.0 for z in elements})
 
 
 def archive_old_checkpoints(work_dir: str, restarting: bool) -> None:
@@ -166,6 +208,12 @@ def main() -> None:
     args, extra = parse_args()
     extra = [a for a in extra if a != "--"]
     args = resolve_energy_arg(args)
+    if args.baseline is None:
+        args.baseline = (
+            configured_loader_parameter(args.dataset, "baseline") or "none"
+        )
+    if args.baseline not in ("none", "per_element"):
+        raise SystemExit("baseline must be 'none' or 'per_element'.")
 
     paths = ensure_export(args)
 
@@ -189,6 +237,7 @@ def main() -> None:
         "error_table",
         "loss",
         "huber_delta",
+        "baseline",
     ]
     # "compute_forces": False keeps these runs apart from older runs that
     # computed forces.
@@ -209,6 +258,7 @@ def main() -> None:
     # MACE is always started through run_mace_train.py with this interpreter, so
     # training and the test evaluation use the same MACE (the one of this env).
     launcher = os.path.join(os.path.dirname(__file__), "run_mace_train.py")
+    elements = export_elements(paths)
     cmd = [
         sys.executable,
         launcher,
@@ -222,7 +272,7 @@ def main() -> None:
         f"--valid_file={paths['valid']}",
         f"--test_file={paths['test']}",
         f"--energy_key={ENERGY_KEY}",
-        "--E0s=average",  # per-element reference energies fitted on train
+        e0s_argument(args.baseline, elements),
         # Energy only: forces are not computed (the force terms of the loss are
         # skipped by the launcher), frames without REF_forces get a forces
         # weight of 0 anyway, and the force weight is 0 as a second safeguard.
@@ -253,12 +303,10 @@ def main() -> None:
         # The huber loss also has a stress term (default weight 1): switch it
         # off so the loss is an energy loss.
         cmd += [f"--huber_delta={args.huber_delta}", "--stress_weight=0.0"]
-    elements = exported_elements(paths["train"])
-    if elements:
-        # All elements of train, valid and test: MACE builds its element table
-        # from train and valid only, and a test-only element would crash it
-        # after training.
-        cmd.append(f"--atomic_numbers={elements}")
+    # All elements of train, valid and test: MACE builds its element table
+    # from train and valid only, and a test-only element would crash it after
+    # training.
+    cmd.append(f"--atomic_numbers={elements}")
     env = dict(os.environ)
     wandb_run_id = None
     if args.wandb:
@@ -335,6 +383,7 @@ def main() -> None:
                         "energy_method": args.energy_method,
                         "max_samples": args.max_samples,
                         "target": args.target,
+                        "baseline": args.baseline,
                     },
                 )
     finally:

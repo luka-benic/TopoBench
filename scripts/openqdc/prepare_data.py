@@ -149,6 +149,7 @@ def main() -> None:
     t.add_argument("--target", default=None)
     t.add_argument("--max-samples", type=int, default=None)
     t.add_argument("--subsample-seed", type=int, default=None)
+    t.add_argument("--baseline", choices=["none", "per_element"], default=None)
     t.add_argument("--split-seed", type=int, default=None)
     t.add_argument("--valid-fraction", type=float, default=None)
     t.add_argument("--test-fraction", type=float, default=None)
@@ -171,6 +172,7 @@ def main() -> None:
                 "target": args.target,
                 "max_samples": args.max_samples,
                 "subsample_seed": args.subsample_seed,
+                "baseline": args.baseline,
                 "split_seed": args.split_seed,
                 "valid_fraction": args.valid_fraction,
                 "test_fraction": args.test_fraction,

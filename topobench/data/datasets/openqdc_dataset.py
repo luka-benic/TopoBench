@@ -39,7 +39,8 @@ class OpenQDCDataset(InMemoryDataset):
       number of atoms (used to identify molecules in the test-set results),
     - ``energy``: the selected energy in eV, as returned by OpenQDC,
     - ``y``: the regression target, i.e. ``energy`` minus a per-element
-      linear baseline when ``baseline="per_element"``, else ``energy``.
+      linear baseline when ``baseline="per_element"`` (fitted on the training
+      split only), else the raw ``energy`` (``baseline="none"``, the default).
 
     Forces are never loaded. Energies (eV) and positions (Angstrom) are the
     values OpenQDC returns for ``energy_unit="ev"``, ``distance_unit="ang"``
@@ -87,7 +88,7 @@ class OpenQDCDataset(InMemoryDataset):
         self.atom_types = [int(z) for z in parameters.atom_types]
         self.target = opt("target", "energies")
         self.energy_method = opt("energy_method", 0)
-        self.baseline = opt("baseline", "per_element")
+        self.baseline = opt("baseline", "none")
         self.edge_method = opt("edge_method", "bonds")
         self.bond_scale = float(opt("bond_scale", 1.3))
         self.cutoff = float(opt("cutoff", 5.0))
@@ -183,10 +184,18 @@ class OpenQDCDataset(InMemoryDataset):
                 edges,
                 f"n{self.max_samples if self.max_samples is not None else 'all'}",
                 f"s{self.subsample_seed}",
-                # the baseline is fitted on the training split only
-                f"split_v{self.valid_fraction}_t{self.test_fraction}"
-                f"_s{self.split_seed}",
             ]
+            + (
+                # the per-element baseline is fitted on the training split only,
+                # so the graphs then depend on the split; with no baseline they
+                # do not
+                [
+                    f"split_v{self.valid_fraction}_t{self.test_fraction}"
+                    f"_s{self.split_seed}"
+                ]
+                if self.baseline == "per_element"
+                else []
+            )
         )
 
     @property

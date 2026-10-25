@@ -216,3 +216,7 @@ figures_mace/
 
 # GPSE weights downloaded by graph/gps
 GPSE_pretrained/
+
+# backups of the Claude Code session (local only)
+session_backups/
+audit*.md
