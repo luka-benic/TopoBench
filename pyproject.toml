@@ -35,6 +35,7 @@ dependencies=[
     "scikit-learn",
     "matplotlib",
     "networkx",
+    "python-igraph",
     "pandas",
     "decorator",
     "hypernetx < 2.0.0",

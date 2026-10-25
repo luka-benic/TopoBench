@@ -144,13 +144,15 @@ TETRA_Z = [1, 1, 1, 1]
 TETRA_POS = [[0, 0, 0], [0.7, 0, 0], [0.35, 0.6, 0], [0.35, 0.2, 0.57]]
 
 
-def test_models_sharing_a_lifting_share_it_and_graph_models_have_none():
+def test_selective_liftings_resolve_model_specific_operators():
     from topobench.utils.openqdc_liftings import lifting_key, model_liftings
 
     assert model_liftings("graph/gcn") == []
-    assert lifting_key(model_liftings("simplicial/scn")) == lifting_key(
+    assert lifting_key(model_liftings("simplicial/scn")) != lifting_key(
         model_liftings("simplicial/san")
     )
+    for model in ["simplicial/scn", "simplicial/san"]:
+        assert model_liftings(model)[0]["transform_name"] == "SimplicialCliqueLiftingSelective"
     assert lifting_key(model_liftings("simplicial/scn")) != lifting_key(
         model_liftings("cell/cwn")
     )
@@ -205,8 +207,9 @@ def test_page_lists_liftings_and_switches_between_them(tmp_path, monkeypatch):
         models=["simplicial/scn", "simplicial/san", "cell/cwn", "graph/gcn"],
     )
     text = path.read_text()
-    assert "simplicial/scn, simplicial/san: SimplicialCliqueLifting" in text
-    assert "cell/cwn: CellCycleLifting" in text
+    assert "simplicial/scn: SimplicialCliqueLiftingSelective" in text
+    assert "simplicial/san: SimplicialCliqueLiftingSelective" in text
+    assert "cell/cwn: CellCycleLiftingSelective" in text
     assert "lightpink" in text and "graph/gcn:" not in text
 
 

@@ -325,7 +325,7 @@ Pass any model config of `configs/model/` as `--model <domain>/<name>`. These ru
 
 | Domain | Models |
 |---|---|
-| graph | `graph/gcn`, `graph/gin`, `graph/gat`, `graph/gcn_dgm`, `graph/gps`, `graph/graph_mlp`, `graph/nsd` |
+| graph | `graph/gcn`, `graph/gcn_cluster`, `graph/gin`, `graph/gat`, `graph/gcn_dgm`, `graph/gps`, `graph/graph_mlp`, `graph/nsd` |
 | pointcloud | `pointcloud/deepset` |
 | simplicial | `simplicial/san`, `simplicial/scn`, `simplicial/sccnn`, `simplicial/sccnn_custom`, `simplicial/sann`, `simplicial/hopse_g`, `simplicial/hopse_m`, `simplicial/topotune` |
 | cell | `cell/can`, `cell/cccn`, `cell/ccxn`, `cell/cwn`, `cell/hopse_g`, `cell/hopse_m`, `cell/topotune`, `cell/topotune_onehasse` |
@@ -343,7 +343,7 @@ These configs do **not** run out of the box on the OpenQDC graphs:
 | `simplicial/sccn` | `KeyError: 'x_3'`: it needs rank-3 simplices, which molecular graphs rarely have |
 | `cell/sann_online`, `simplicial/sann_online` | configuration errors (`infer_in_hasse_graph_agg_dim() missing 2 required positional arguments`; encoder `SANNOnlineFeatureEncoder` not found) |
 
-**Hypergraph, simplicial and cell models.** The OpenQDC molecules are graphs, and TopoBench lifts them to the domain of the model automatically, so these models need no extra setup: `--model hypergraph/unignn2` is enough. The default lift for hypergraph models is `HypergraphKHopLifting` with k=1. Another lift can be chosen after `--`, for example `-- transforms=liftings/graph2hypergraph/knn` (the lift configs are in `configs/transforms/liftings/graph2hypergraph/`). Not every lift suits molecular graphs, so check a lift other than the default on a few molecules first.
+**Hypergraph, simplicial and cell models.** The OpenQDC molecules are graphs, and TopoBench lifts them to the domain of the model automatically, so these models need no extra setup: `--model hypergraph/unignn2` is enough. The default lift for hypergraph models is `HypergraphKHopLiftingLargeScale` with k=1. Another lift can be chosen after `--`, for example `-- transforms=liftings/graph2hypergraph/knn` (the lift configs are in `configs/transforms/liftings/graph2hypergraph/`). Not every lift suits molecular graphs, so check a lift other than the default on a few molecules first.
 
 **Metrics.** At the end of training TopoBench loads the best checkpoint and tests it on the validation and the test set, printing `val/...` and `test/...` tables with `loss`, `mae` and `mse`. They are in **eV**, on `y` (the raw energy, or the baseline-subtracted energy with `baseline: per_element`). Run output goes to `logs/train/runs/<timestamp>_<pid>/`. A direct `python -m topobench` run trains on GPU 0 (`trainer/default.yaml`); `sub_openqdc.sh` chooses the device for you, and `--` `trainer.devices=[2]` selects another. The per-molecule test predictions and a parity plot are saved too, see [Test-set results](#test-set-results-txt-files-and-parity-plots).
 
@@ -355,8 +355,8 @@ Both are models for combinatorial complexes and need no extra setup: the molecul
 
 | Model config | Lifting of the molecular graph |
 |---|---|
-| `cell/topotune`, `cell/topotune_onehasse` | `CellCycleLifting` (rings become 2-cells) |
-| `simplicial/topotune`, `simplicial/topotune_onehasse` | `SimplicialCliqueLifting` |
+| `cell/topotune`, `cell/topotune_onehasse` | `CellCycleLiftingSelective` (rings become 2-cells) |
+| `simplicial/topotune`, `simplicial/topotune_onehasse` | `SimplicialCliqueLiftingSelective` |
 | `combinatorial/topotune` | `GraphTriangleInducedCC` (nodes, edges and triangles) |
 
 ```bash
@@ -849,16 +849,16 @@ Which lifting a model uses is resolved from the Hydra configs exactly as in a tr
 
 | Model domain | Default lifting | Drawn in pink |
 |---|---|---|
-| simplicial (`scn`, `san`, `sccn`, ...) | `SimplicialCliqueLifting` | triangles (rank 2) and tetrahedra (rank 3) of the clique complex |
-| cell (`cwn`, `can`, ...) | `CellCycleLifting` | one filled polygon per ring (cycle) |
-| hypergraph (`unignn`, `unignn2`, `alldeepset`, ...) | `HypergraphKHopLifting` | one hyperedge per atom (the atom and its neighbours) as a filled surface, or a line for two atoms |
+| simplicial (`scn`, `san`, `sccn`, ...) | `SimplicialCliqueLiftingSelective` | triangles (rank 2) and tetrahedra (rank 3) of the clique complex |
+| cell (`cwn`, `can`, ...) | `CellCycleLiftingSelective` | one filled polygon per ring (cycle) |
+| hypergraph (`unignn`, `unignn2`, `alldeepset`, ...) | `HypergraphKHopLiftingLargeScale` | one hyperedge per atom (the atom and its neighbours) as a filled surface, or a line for two atoms |
 | combinatorial (`topotune`, `etnn_coordinate_policy_*`) | `GraphTriangleInducedCC` | the cells of rank 2 and higher |
 | graph models, `non_relational/mlp`, `pointcloud/deepset` | none | nothing (the model runs on the plain graph) |
 
 **The combinatorial lifting (`GraphTriangleInducedCC`, used by `combinatorial/topotune` and the ETNN configs).** It looks for the *maximal* cliques of exactly 3 atoms (triangles that are not part of a larger clique). A rank-2 cell is the union of a group of triangles that overlap in exactly 1 or 2 atoms, and a rank-3 cell the union of a group that overlap in at least 1 atom; an isolated triangle gives no cell. Organic molecules rarely have two overlapping triangles in their bond graph, and on a dense cutoff graph the maximal cliques are larger than 3, so most molecules get no higher cell at all: the lifted complex is then only the atoms and bonds, and the legend says *no cells of rank 2 or higher on this graph*. A cell that is the same set of atoms at rank 2 and rank 3 exists once, at rank 3.
 
 
-Models that share a lifting share one menu entry (for example `simplicial/scn, simplicial/san`). Atoms, edges (rank 1) are not drawn again by the lifting, since the molecular graph shows them. The filled surfaces are drawing aids: a ring is filled as a fan around its centroid, other cells as their convex hull. If a lifting fails on a molecule, a message is printed and that molecule has no pink structure for it. Molecules without triangles (for example benzene) have an empty clique complex of rank 2, which is correct.
+Models with identical lifting configurations share one menu entry (selective operator requirements can give models separate entries). Atoms, edges (rank 1) are not drawn again by the lifting, since the molecular graph shows them. The filled surfaces are drawing aids: a ring is filled as a fan around its centroid, other cells as their convex hull. If a lifting fails on a molecule, a message is printed and that molecule has no pink structure for it. Molecules without triangles (for example benzene) have an empty clique complex of rank 2, which is correct.
 
 ## Visualising MACE's cutoff radius and number of layers
 

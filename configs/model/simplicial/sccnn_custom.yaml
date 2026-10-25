@@ -2,6 +2,9 @@ _target_: topobench.model.TBModel
 
 model_name: sccnn
 model_domain: simplicial
+neighborhoods:
+  - incidence-1
+  - incidence-2
 
 feature_encoder:
   _target_: topobench.nn.encoders.${model.feature_encoder.encoder_name}
@@ -31,9 +34,9 @@ backbone:
   n_layers: 1
 
 backbone_wrapper:
-  _target_: topobench.nn.wrappers.SCCNNWrapper
+  _target_: topobench.nn.wrappers.SCCNNCustomWrapper
   _partial_: true
-  wrapper_name: SCCNNWrapper
+  wrapper_name: SCCNNCustomWrapper
   out_channels: ${model.feature_encoder.out_channels}
   num_cell_dimensions: ${infer_num_cell_dimensions:${oc.select:model.feature_encoder.selected_dimensions,null},${model.feature_encoder.in_channels}}
 

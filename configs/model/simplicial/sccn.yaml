@@ -2,6 +2,10 @@ _target_: topobench.model.TBModel
 
 model_name: sccn
 model_domain: simplicial
+neighborhoods:
+  - hodge_laplacian-0
+  - hodge_laplacian-1
+  - hodge_laplacian-2
 
 feature_encoder:
   _target_: topobench.nn.encoders.${model.feature_encoder.encoder_name}

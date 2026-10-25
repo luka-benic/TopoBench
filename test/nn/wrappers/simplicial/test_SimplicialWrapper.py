@@ -1,26 +1,31 @@
 """Unit tests for simplicial model wrappers."""
 
-import torch
-from torch_geometric.utils import get_laplacian
-from ...._utils.nn_module_auto_test import NNModuleAutoTest
-from ...._utils.flow_mocker import FlowMocker
-from topobench.nn.backbones.simplicial import SCCNNCustom
+import pytest
 from topomodelx.nn.simplicial.san import SAN
-from topomodelx.nn.simplicial.scn2 import SCN2
 from topomodelx.nn.simplicial.sccn import SCCN
+from topomodelx.nn.simplicial.sccnn import SCCNN
+
+from topobench.nn.backbones.simplicial import SCCNNCustom, SCN2MatrixFree
 from topobench.nn.wrappers import (
-    SCCNWrapper,
-    SCCNNWrapper,
     SANWrapper,
+    SCCNNCustomWrapper,
+    SCCNNWrapper,
+    SCCNWrapper,
     SCNWrapper,
 )
+
 
 class TestSimplicialWrappers:
     r"""Test simplicial model wrappers.
 
-        Test all simplicial wrappers.
+    Test all simplicial wrappers.
     """
-    def test_SCCNNWrapper(self, sg1_clique_lifted):
+
+    @pytest.mark.parametrize(
+        "backbone, wrapper_class",
+        [(SCCNN, SCCNNWrapper), (SCCNNCustom, SCCNNCustomWrapper)],
+    )
+    def test_SCCNNWrapper(self, sg1_clique_lifted, backbone, wrapper_class):
         """Test SCCNNWrapper.
 
         Parameters
@@ -32,12 +37,17 @@ class TestSimplicialWrappers:
         out_dim = 4
         conv_order = 1
         sc_order = 3
-        init_args = (data.x_0.shape[1], data.x_1.shape[1], data.x_2.shape[1]), (out_dim, out_dim, out_dim), conv_order, sc_order
+        init_args = (
+            (data.x_0.shape[1], data.x_1.shape[1], data.x_2.shape[1]),
+            (out_dim, out_dim, out_dim),
+            conv_order,
+            sc_order,
+        )
 
-        wrapper = SCCNNWrapper(
-            SCCNNCustom(*init_args),
+        wrapper = wrapper_class(
+            backbone(*init_args),
             out_channels=out_dim,
-            num_cell_dimensions=3
+            num_cell_dimensions=3,
         )
         out = wrapper(data)
         # Assert keys in output
@@ -59,7 +69,7 @@ class TestSimplicialWrappers:
         wrapper = SANWrapper(
             SAN(data.x_0.shape[1], hidden_channels),
             out_channels=out_dim,
-            num_cell_dimensions=3
+            num_cell_dimensions=3,
         )
         out = wrapper(data)
         # Assert keys in output
@@ -78,9 +88,13 @@ class TestSimplicialWrappers:
         out_dim = data.x_0.shape[1]
 
         wrapper = SCNWrapper(
-            SCN2(data.x_0.shape[1], data.x_1.shape[1], data.x_2.shape[1]),
+            SCN2MatrixFree(
+                data.x_0.shape[1],
+                data.x_1.shape[1],
+                data.x_2.shape[1],
+            ),
             out_channels=out_dim,
-            num_cell_dimensions=3
+            num_cell_dimensions=3,
         )
         out = wrapper(data)
         # Assert keys in output
@@ -102,7 +116,7 @@ class TestSimplicialWrappers:
         wrapper = SCCNWrapper(
             SCCN(data.x_0.shape[1], max_rank),
             out_channels=out_dim,
-            num_cell_dimensions=3
+            num_cell_dimensions=3,
         )
         out = wrapper(data)
         # Assert keys in output

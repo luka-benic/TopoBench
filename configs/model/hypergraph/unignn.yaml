@@ -1,6 +1,6 @@
 _target_: topobench.model.TBModel
 
-model_name: unignn2
+model_name: unignn
 model_domain: hypergraph
 
 feature_encoder:

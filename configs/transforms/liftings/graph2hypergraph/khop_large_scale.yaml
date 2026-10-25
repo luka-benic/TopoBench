@@ -1,0 +1,7 @@
+transform_type: 'lifting'
+transform_name: "HypergraphKHopLiftingLargeScale"
+k_value: 1
+feature_lifting: ProjectionSum
+preserve_edge_attr: False
+complex_dim: 1
+neighborhoods: ${oc.select:model.backbone.neighborhoods,null}

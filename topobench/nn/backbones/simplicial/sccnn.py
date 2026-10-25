@@ -3,6 +3,12 @@
 import torch
 from torch.nn.parameter import Parameter
 
+from topobench.nn.backbones.simplicial.incidence_operators import (
+    BoundaryOperator,
+    operator_powers,
+    zero_operator,
+)
+
 
 class SCCNNCustom(torch.nn.Module):
     """SCCNN implementation for complex classification.
@@ -63,15 +69,13 @@ class SCCNNCustom(torch.nn.Module):
             for _ in range(n_layers)
         )
 
-    def forward(self, x_all, laplacian_all, incidence_all):
+    def forward(self, x_all, incidence_all):
         """Forward computation.
 
         Parameters
         ----------
         x_all : tuple(tensors)
             Tuple of feature tensors (node, edge, face).
-        laplacian_all : tuple(tensors)
-            Tuple of Laplacian tensors (graph laplacian L0, down edge laplacian L1_d, upper edge laplacian L1_u, face laplacian L2).
         incidence_all : tuple(tensors)
             Tuple of order 1 and 2 incidence matrices.
 
@@ -85,10 +89,25 @@ class SCCNNCustom(torch.nn.Module):
         in_x_1 = self.in_linear_1(x_1)
         in_x_2 = self.in_linear_2(x_2)
 
+        boundary_1 = BoundaryOperator(incidence_all[0])
+        boundary_2 = BoundaryOperator(incidence_all[1])
+        boundary_3 = (
+            BoundaryOperator(incidence_all[2])
+            if len(incidence_all) > 2
+            else None
+        )
+        operators = (
+            boundary_1.up,
+            boundary_1.down,
+            boundary_2.up,
+            boundary_2.down,
+            boundary_3.up if boundary_3 is not None else zero_operator,
+        )
+
         # Forward through SCCNN
         x_all = (in_x_0, in_x_1, in_x_2)
         for layer in self.layers:
-            x_all = layer(x_all, laplacian_all, incidence_all)
+            x_all = layer(x_all, operators, incidence_all)
 
         return x_all
 
@@ -209,13 +228,13 @@ class SCCNNLayer(torch.nn.Module):
                 "Should be either xavier_uniform or xavier_normal."
             )
 
-    def aggr_norm_func(self, conv_operator, x):
+    def aggr_norm_func(self, operator, x):
         r"""Perform aggregation normalization.
 
         Parameters
         ----------
-        conv_operator : torch.sparse
-            Convolution operator.
+        operator : callable
+            Matrix-free convolution operator.
         x : torch.Tensor
             Feature tensor.
 
@@ -224,7 +243,8 @@ class SCCNNLayer(torch.nn.Module):
         torch.Tensor
             Normalized feature tensor.
         """
-        neighborhood_size = torch.sum(conv_operator.to_dense(), dim=1)
+        ones = torch.ones((x.size(0), 1), dtype=x.dtype, device=x.device)
+        neighborhood_size = operator(ones).squeeze(1)
         neighborhood_size_inv = 1 / neighborhood_size
         neighborhood_size_inv[~(torch.isfinite(neighborhood_size_inv))] = 0
 
@@ -253,13 +273,13 @@ class SCCNNLayer(torch.nn.Module):
             return torch.nn.functional.leaky_relu(x)
         return None
 
-    def chebyshev_conv(self, conv_operator, conv_order, x):
+    def chebyshev_conv(self, operator, conv_order, x):
         r"""Perform Chebyshev convolution.
 
         Parameters
         ----------
-        conv_operator : torch.sparse
-            Convolution operator.
+        operator : callable
+            Matrix-free convolution operator.
         conv_order : int
             Order of the convolution.
         x : torch.Tensor
@@ -270,32 +290,35 @@ class SCCNNLayer(torch.nn.Module):
         torch.Tensor
             Output tensor.
         """
-        num_simplices, num_channels = x.shape
-        X = torch.empty(size=(num_simplices, num_channels, conv_order)).to(
-            x.device
-        )
+        if not self.aggr_norm:
+            return operator_powers(operator, conv_order, x)
 
-        if self.aggr_norm:
-            X[:, :, 0] = torch.mm(conv_operator, x)
-            X[:, :, 0] = self.aggr_norm_func(conv_operator, X[:, :, 0])
-            for k in range(1, conv_order):
-                X[:, :, k] = torch.mm(conv_operator, X[:, :, k - 1])
-                X[:, :, k] = self.aggr_norm_func(conv_operator, X[:, :, k])
-        else:
-            X[:, :, 0] = torch.mm(conv_operator, x)
-            for k in range(1, conv_order):
-                X[:, :, k] = torch.mm(conv_operator, X[:, :, k - 1])
-        return X
+        def normalized(current):
+            """Apply one normalized operator step.
 
-    def forward(self, x_all, laplacian_all, incidence_all):
+            Parameters
+            ----------
+            current : torch.Tensor
+                Current operator state.
+
+            Returns
+            -------
+            torch.Tensor
+                Next normalized operator state.
+            """
+            return self.aggr_norm_func(operator, operator(current))
+
+        return operator_powers(normalized, conv_order, x)
+
+    def forward(self, x_all, operators, incidence_all):
         r"""Forward computation.
 
         Parameters
         ----------
         x_all : tuple of tensors
             Tuple of input feature tensors (node, edge, face).
-        laplacian_all : tuple of tensors
-            Tuple of Laplacian tensors (graph laplacian L0, down edge laplacian L1_d, upper edge laplacian L1_u, face laplacian L2).
+        operators : tuple of callables
+            Matrix-free Hodge, lower, and upper Laplacian actions.
         incidence_all : tuple of tensors
             Tuple of order 1 and 2 incidence matrices.
 
@@ -310,22 +333,17 @@ class SCCNNLayer(torch.nn.Module):
         """
         x_0, x_1, x_2 = x_all
 
-        if self.sc_order == 2:
-            laplacian_0, laplacian_down_1, laplacian_up_1, laplacian_2 = (
-                laplacian_all
-            )
-        elif self.sc_order > 2:
-            (
-                laplacian_0,
-                laplacian_down_1,
-                laplacian_up_1,
-                laplacian_down_2,
-                laplacian_up_2,
-            ) = laplacian_all
+        (
+            laplacian_0,
+            laplacian_down_1,
+            laplacian_up_1,
+            laplacian_down_2,
+            laplacian_up_2,
+        ) = operators
 
         # num_nodes, num_edges, num_triangles = x_0.shape[0], x_1.shape[0], x_2.shape[0]
 
-        b1, b2 = incidence_all
+        b1, b2 = incidence_all[:2]
 
         # identity_0, identity_1, identity_2 = (
         #     torch.eye(num_nodes).to(x_0.device),

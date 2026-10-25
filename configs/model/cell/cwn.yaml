@@ -2,6 +2,9 @@ _target_: topobench.model.TBModel
 
 model_name: cwn
 model_domain: cell
+neighborhoods:
+  - up_adjacency-1
+  - down_incidence-2
 
 feature_encoder:
   _target_: topobench.nn.encoders.${model.feature_encoder.encoder_name}

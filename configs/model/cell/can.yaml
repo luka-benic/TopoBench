@@ -2,6 +2,10 @@ _target_: topobench.model.TBModel
 
 model_name: can
 model_domain: cell
+neighborhoods:
+  - up_adjacency-0
+  - down_laplacian-1
+  - up_laplacian-1
 
 feature_encoder:
   _target_: topobench.nn.encoders.${model.feature_encoder.encoder_name}

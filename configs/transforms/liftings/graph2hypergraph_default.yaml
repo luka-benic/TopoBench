@@ -1,2 +1,3 @@
 defaults:
-  - /transforms/liftings/graph2hypergraph@graph2hypergraph_lifting: khop #knn
+  - /transforms/liftings/graph2hypergraph@graph2hypergraph_lifting: khop_large_scale
+  # - /transforms/liftings/graph2hypergraph@graph2hypergraph_lifting: khop
