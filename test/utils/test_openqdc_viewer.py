@@ -293,3 +293,38 @@ def test_page_holds_the_energy_of_every_method(tmp_path, monkeypatch):
     assert '"methods":["PBE","B3LYP"]' in flat
     assert '"energies":[[-10.5,null],[-10.5,null]]' in flat
     assert '"method":1' in flat  # B3LYP is shown first, as asked
+
+
+def test_combinatorial_lifting_cells_come_from_groups_of_overlapping_triangles():
+    """GraphTriangleInducedCC: cells only where maximal triangles overlap."""
+    from topobench.utils.openqdc_liftings import lift_to_cells, model_liftings
+
+    lifting = model_liftings("combinatorial/etnn_coordinate_policy_physical")
+    carbon = [6, 6, 6, 6]
+    # Two triangles sharing an edge (a rhombus): one cell with all four atoms
+    # (the rank-2 and rank-3 cell are the same set of atoms; the complex keeps
+    # the last one, rank 3).
+    rhombus = [[0, 0, 0], [1.5, 0, 0], [0.75, 1.3, 0], [0.75, -1.3, 0]]
+    assert lift_to_cells(carbon, rhombus, lifting) == {
+        "rank 3": [(0, 1, 2, 3)]
+    }
+    # A single triangle, or a ring without triangles, gives no cell at all.
+    assert not any(lift_to_cells([6, 6, 6], rhombus[:3], lifting).values())
+    assert not any(lift_to_cells(*_benzene(), lifting).values())
+
+
+def _benzene():
+    angles = np.arange(6) * np.pi / 3
+    carbon = np.c_[1.4 * np.cos(angles), 1.4 * np.sin(angles), np.zeros(6)]
+    hydrogen = np.c_[2.48 * np.cos(angles), 2.48 * np.sin(angles), np.zeros(6)]
+    return [6] * 6 + [1] * 6, np.vstack([carbon, hydrogen])
+
+
+def test_dense_cutoff_graph_has_no_maximal_triangles():
+    """On a dense graph the maximal cliques are larger than 3: no cells."""
+    from topobench.utils.openqdc_liftings import lift_to_cells, model_liftings
+
+    z, pos = _benzene()
+    lifting = model_liftings("combinatorial/topotune")
+    cells = lift_to_cells(z, pos, lifting, graph_edges="radius", cutoff=5.0)
+    assert not any(cells.values())

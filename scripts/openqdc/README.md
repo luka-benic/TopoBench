@@ -855,6 +855,9 @@ Which lifting a model uses is resolved from the Hydra configs exactly as in a tr
 | combinatorial (`topotune`, `etnn_coordinate_policy_*`) | `GraphTriangleInducedCC` | the cells of rank 2 and higher |
 | graph models, `non_relational/mlp`, `pointcloud/deepset` | none | nothing (the model runs on the plain graph) |
 
+**The combinatorial lifting (`GraphTriangleInducedCC`, used by `combinatorial/topotune` and the ETNN configs).** It looks for the *maximal* cliques of exactly 3 atoms (triangles that are not part of a larger clique). A rank-2 cell is the union of a group of triangles that overlap in exactly 1 or 2 atoms, and a rank-3 cell the union of a group that overlap in at least 1 atom; an isolated triangle gives no cell. Organic molecules rarely have two overlapping triangles in their bond graph, and on a dense cutoff graph the maximal cliques are larger than 3, so most molecules get no higher cell at all: the lifted complex is then only the atoms and bonds, and the legend says *no cells of rank 2 or higher on this graph*. A cell that is the same set of atoms at rank 2 and rank 3 exists once, at rank 3.
+
+
 Models that share a lifting share one menu entry (for example `simplicial/scn, simplicial/san`). Atoms, edges (rank 1) are not drawn again by the lifting, since the molecular graph shows them. The filled surfaces are drawing aids: a ring is filled as a fan around its centroid, other cells as their convex hull. If a lifting fails on a molecule, a message is printed and that molecule has no pink structure for it. Molecules without triangles (for example benzene) have an empty clique complex of rank 2, which is correct.
 
 ## Visualising MACE's cutoff radius and number of layers

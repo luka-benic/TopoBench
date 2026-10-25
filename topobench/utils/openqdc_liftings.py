@@ -11,8 +11,11 @@ indices, ready to be drawn.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -224,6 +227,59 @@ def lifted_cells(data: Data) -> dict[str, list[tuple[int, ...]]]:
     return cells
 
 
+@contextmanager
+def captured_combinatorial_cells() -> Iterator[
+    list[tuple[int, tuple[int, ...]]]
+]:
+    """Record the cells a combinatorial lifting adds to its complex.
+
+    The incidence matrices of a combinatorial complex cannot always give back
+    the atoms of a cell: a rank-3 cell that contains no rank-2 cell, for
+    example, is a column of zeros in ``incidence_3``. While this context is
+    active, every ``CombinatorialComplex.add_cell`` call is recorded, so the
+    atoms of the cells are known exactly as the lifting built them.
+
+    Yields
+    ------
+    list[tuple[int, tuple[int, ...]]]
+        ``(rank, sorted atom indices)`` of each cell added, filled while the
+        context is active.
+    """
+    from toponetx.classes import CombinatorialComplex
+
+    recorded: list[tuple[int, tuple[int, ...]]] = []
+    original = CombinatorialComplex.add_cell
+
+    def add_cell(self, cell, rank=None, *args, **kwargs):
+        """Record the cell, then add it as usual (``self`` is the complex).
+
+        Parameters
+        ----------
+        cell : Iterable
+            Atoms of the cell.
+        rank : int, optional
+            Rank of the cell.
+        *args : Any
+            Passed on.
+        **kwargs : Any
+            Passed on.
+
+        Returns
+        -------
+        Any
+            Whatever ``CombinatorialComplex.add_cell`` returns.
+        """
+        with contextlib.suppress(TypeError, ValueError):
+            recorded.append((int(rank), tuple(sorted(int(v) for v in cell))))
+        return original(self, cell, rank, *args, **kwargs)
+
+    CombinatorialComplex.add_cell = add_cell
+    try:
+        yield recorded
+    finally:
+        CombinatorialComplex.add_cell = original
+
+
 def lift_to_cells(
     numbers: Any,
     positions: Any,
@@ -249,4 +305,15 @@ def lift_to_cells(
     dict[str, list[tuple[int, ...]]]
         The cells of each rank.
     """
-    return lifted_cells(lift_molecule(numbers, positions, liftings, **kwargs))
+    with captured_combinatorial_cells() as recorded:
+        data = lift_molecule(numbers, positions, liftings, **kwargs)
+    cells = lifted_cells(data)
+    # A cell is its set of atoms: adding the same set at another rank replaces
+    # the first, so the last rank added is the one in the lifted complex.
+    final = {atoms: rank for rank, atoms in recorded if rank >= 2}
+    if final:
+        # A combinatorial lifting: use the cells as it built them.
+        cells = {}
+        for atoms, rank in final.items():
+            cells.setdefault(f"rank {rank}", []).append(atoms)
+    return cells
