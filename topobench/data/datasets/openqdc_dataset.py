@@ -15,6 +15,7 @@ from tqdm import tqdm
 
 from topobench.data.utils.openqdc_utils import (
     OpenQDCSource,
+    energy_cache_suffix,
     locked,
     method_names_for,
     molecular_edges,
@@ -196,7 +197,7 @@ class OpenQDCDataset(InMemoryDataset):
                 if self.baseline == "per_element"
                 else []
             )
-        )
+        ) + energy_cache_suffix(self.name)
 
     @property
     def processed_dir(self) -> str:

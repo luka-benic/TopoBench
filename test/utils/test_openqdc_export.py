@@ -101,11 +101,29 @@ def test_non_total_energies_are_refused_even_for_an_existing_export(
     export_xyz.ensure_export(args)  # allowed explicitly: the export is reused
 
 
-def test_export_folder_name_has_no_version_prefix(export_xyz, tmp_path):
-    """The folder name is readable and does not start with a version."""
-    folder = Path(export_xyz.xyz_dir(make_args(tmp_path)))
-    assert folder.parent.name == "QM9_energies_m0_n100_s0"
+@pytest.mark.parametrize("dataset", ["QM9", "QM7b", "Alchemy"])
+def test_export_folder_names_include_only_required_unit_revision(
+    export_xyz, tmp_path, dataset
+):
+    folder = Path(export_xyz.xyz_dir(make_args(tmp_path, dataset=dataset)))
+    suffix = "_kcalmol_ev_v1" if dataset in ("QM9", "QM7b") else ""
+    assert folder.parent.name == f"{dataset}_energies_m0_n100_s0{suffix}"
     assert folder.name == "split_v0.1_t0.1_s0"
+
+
+def test_old_qm9_export_is_not_reused(export_xyz, tmp_path, monkeypatch):
+    args = make_args(tmp_path)
+    old = tmp_path / "QM9_energies_m0_n100_s0" / "split_v0.1_t0.1_s0"
+    old.mkdir(parents=True)
+    (old / "export_args.json").write_text("{}")
+    (old / "train.xyz").write_text("old incorrectly scaled energies")
+    calls = []
+    monkeypatch.setattr(export_xyz, "is_cached", lambda *a, **k: True)
+    monkeypatch.setattr(export_xyz, "export", lambda args: calls.append(args))
+    paths = export_xyz.ensure_export(args)
+    assert calls == [args]
+    assert Path(paths["train"]).parent != old
+    assert (old / "train.xyz").read_text() == "old incorrectly scaled energies"
 
 
 def test_finished_export_is_not_made_again(export_xyz, tmp_path, monkeypatch):

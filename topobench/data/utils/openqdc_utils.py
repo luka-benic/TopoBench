@@ -1,14 +1,15 @@
 """Shared helpers for loading OpenQDC datasets (TopoBench and MACE pipelines).
 
 Every dataset is loaded through OpenQDC's own unit conversion
-(``energy_unit="ev"``, ``distance_unit="ang"``); the values OpenQDC returns are
-used as they are. Forces are never read.
+(``energy_unit="ev"``, ``distance_unit="ang"``). QM9 and QM7b source-unit
+metadata is corrected before conversion. Forces are never read.
 """
 
 import logging
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 # Units requested from OpenQDC for every dataset.
 ENERGY_UNIT = "ev"
 DISTANCE_UNIT = "ang"
+# The QMX archives store kcal/mol; OpenQDC 0.1.2 declares Hartree instead.
+SOURCE_ENERGY_UNITS = {"QM9": "kcal/mol", "QM7b": "kcal/mol"}
 
 log = logging.getLogger(__name__)
 
@@ -29,15 +32,8 @@ log = logging.getLogger(__name__)
 NOT_TOTAL_ENERGY = {
     "QM8": "columns are excitation energies (E1, E2 x CC2/PBE0/PBE0.1/CAM)"
 }
-# Known caveats of the energies as OpenQDC returns them. They are reported as
-# a warning only: the values are used exactly as OpenQDC converts them.
+# Known caveats of the targets, beyond their units.
 ENERGY_NOTES = {
-    "QM9": "OpenQDC labels the energies eV but they have the scale of "
-    "kcal/mol converted as if they were Hartree, i.e. about 627.5 times the "
-    "physical eV: every error reported in eV is that much too large",
-    "QM7b": "OpenQDC labels the energies eV but they have the scale of "
-    "kcal/mol converted as if they were Hartree (about 627.5 times the "
-    "physical eV)",
     "MultixcQM9": "the energy columns are atomization-type energies (about "
     "-4 to -7 eV per atom), not total energies",
 }
@@ -311,6 +307,24 @@ def resolve_energy_method(names: list[str], spec) -> int:
     return hits[0]
 
 
+def energy_cache_suffix(name: str) -> str:
+    """Separate corrected QM9/QM7b graphs and XYZ files from older exports.
+
+    Parameters
+    ----------
+    name : str
+        Dataset name (case-insensitive).
+
+    Returns
+    -------
+    str
+        Unit revision suffix for QM9/QM7b, otherwise an empty string.
+    """
+    return (
+        "_kcalmol_ev_v1" if canonical_name(name) in SOURCE_ENERGY_UNITS else ""
+    )
+
+
 def _prepare_class(name: str, cache_dir: str):
     """Point OpenQDC at ``cache_dir`` and return the dataset class.
 
@@ -330,7 +344,19 @@ def _prepare_class(name: str, cache_dir: str):
     from openqdc.utils.io import set_cache_dir
 
     set_cache_dir(str(cache_dir))
-    return getattr(openqdc, canonical_name(name))
+    name = canonical_name(name)
+    cls = getattr(openqdc, name)
+    source_unit = SOURCE_ENERGY_UNITS.get(name)
+    if source_unit is not None and cls.__energy_unit__ != source_unit:
+        if version("openqdc") != "0.1.2" or cls.__energy_unit__ != "hartree":
+            raise RuntimeError(
+                f"Verify {name} source energy units for OpenQDC "
+                f"{version('openqdc')} before loading: declared "
+                f"{cls.__energy_unit__!r}, expected {source_unit!r}."
+            )
+        # Scope the metadata correction to this reader, not OpenQDC globally.
+        cls = type(cls.__name__, (cls,), {"__energy_unit__": source_unit})
+    return cls
 
 
 def is_cached(name: str, cache_dir: str) -> bool:

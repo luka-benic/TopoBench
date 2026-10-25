@@ -2,8 +2,8 @@
 
 Works for every OpenQDC potential-energy dataset. Each frame stores positions
 (Angstrom), atomic numbers, ``pbc=F`` and one energy (eV) in
-``info["REF_energy"]``; no forces are written. Energies and positions are the
-values OpenQDC returns for ``energy_unit="ev"`` and ``distance_unit="ang"``.
+``info["REF_energy"]``; no forces are written. The shared ``OpenQDCSource``
+corrects QM9/QM7b source-unit metadata before requesting eV and Angstrom.
 
 Example
 -------
@@ -35,6 +35,7 @@ from topobench.data.utils.openqdc_utils import (
     OpenQDCSource,
     canonical_name,
     default_cache_dir,
+    energy_cache_suffix,
     is_cached,
     locked,
     method_names_for,
@@ -155,7 +156,7 @@ def xyz_dir(args: argparse.Namespace) -> str:
             f"n{n}",
             f"s{args.subsample_seed}",
         ]
-    )
+    ) + energy_cache_suffix(args.dataset)
     return os.path.join(
         args.xyz_root,
         name,

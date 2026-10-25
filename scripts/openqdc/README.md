@@ -68,7 +68,7 @@ scripts/openqdc/sub_openqdc.sh mace 3 --dataset QM9 --max-samples 20000 --epochs
 scripts/openqdc/sub_openqdc.sh topobench cpu --dataset QM9 --max-samples 2000 --epochs 5
 ```
 
-The first run downloads the dataset and preprocesses it; later runs reuse both. Read [Known limitations](#known-limitations) before using QM9 or QM7b energies: OpenQDC's own unit label is wrong for them.
+The first run downloads the dataset and preprocesses it; later runs reuse both. QM9 and QM7b use corrected source-unit metadata, see [Units](#units).
 
 ## What is where
 
@@ -99,7 +99,9 @@ The first run downloads the dataset and preprocesses it; later runs reuse both. 
 
 ### Units
 
-Every dataset is loaded with OpenQDC's own conversion: `energy_unit="ev"` and `distance_unit="ang"`. The values OpenQDC returns are used **as they are**. The raw files in the cache are never modified (OpenQDC converts in memory).
+Every dataset is loaded with OpenQDC's own conversion: `energy_unit="ev"` and `distance_unit="ang"`. For QM9 and QM7b, the shared loader corrects OpenQDC 0.1.2's source-energy declaration from Hartree to **kcal/mol** before conversion, using a local subclass. Other dataset readers are unchanged. The raw files in the cache are never modified (OpenQDC converts in memory).
+
+Corrected QM9/QM7b graph and XYZ folder names include `_kcalmol_ev_v1`. Old derived caches are preserved but not reused; graphs, fitted baselines and lifted data are rebuilt from the existing raw cache. Start new training runs with the corrected data rather than resuming old checkpoints. An upstream reader that already declares kcal/mol needs no override; an unverified version still declaring another unit is rejected for review.
 
 Forces are not read, so there is no force unit in this pipeline.
 
@@ -163,10 +165,10 @@ Seven datasets have a config in the repo. Any other OpenQDC potential-energy dat
 
 | Dataset | Molecules | Energy columns | Elements | Notes |
 |---|---|---|---|---|
-| QM9 | 133,885 | 9 (column 0 = U0) | H C N O F | OpenQDC labels the energies hartree but they are kcal/mol (see below). |
+| QM9 | 133,885 | 9 (column 0 = U0) | H C N O F | Source kcal/mol is converted to eV using corrected metadata. |
 | MultixcQM9 | 133,631 | 229 | H C N O F | 229 functional/basis-set columns. The values are atomization-type energies (about -4 to -7 eV per atom), not total energies. |
 | QM7 | - | 80 | - | Config is a placeholder: the remote OpenQDC copy contains only zeros, training stops with an error |
-| QM7b | 7,211 | 76 | H C N O S Cl | Same label problem as QM9 |
+| QM7b | 7,211 | 76 | H C N O S Cl | Same source-unit correction as QM9 |
 | Alchemy | 202,579 | 1 | H C N O F S Cl | One energy column |
 | VQM24 | 1,104,982 | 1 | 10 elements | Large: start with `--max-samples` |
 | TMQM | 86,665 | 1 | 44 elements incl. transition metals | Up to 569 atoms |
@@ -685,8 +687,8 @@ Calling the scripts directly works the same way, for example `python scripts/ope
 | Dataset | Molecules | Comment |
 |---|---|---|
 | Alchemy | 202,579 | Energies are total energies in eV |
-| QM9 | 133,885 | OpenQDC's unit label is wrong (energies about 627 times too large), see [Known limitations](#known-limitations) |
-| QM7b | 7,211 | same label problem as QM9 |
+| QM9 | 133,885 | Source-unit metadata is corrected before conversion, see [Units](#units) |
+| QM7b | 7,211 | same source-unit correction as QM9 |
 | MultixcQM9 | 133,631 | energies are atomization-type, not total (see [Known limitations](#known-limitations)) |
 | TMQM | 86,665 | compare a known molecule first (see [Known limitations](#known-limitations)) |
 | VQM24 | 1,104,982 | start with a subset (memory, time) |
@@ -855,7 +857,7 @@ Click an entry in the legend to hide or show one trace (for example only the tri
 | Parameters | `bond_scale` (default 1.3) and `cutoff` (Å, default 5.0): one number, or a list to get a menu in the page (the same as `--bond-scale 1.1 1.3 1.5` / `--cutoff 2 3 5`); the first value is shown at first. Also `edges` (initial view), `size_scale`, `max_cells`, `energy_method`, `target`, `offline` |
 | Command line | `--dataset`, `--indices` (default 0), `--save-dir` (default `.`), `--base-name` (default `molecule`), `--energy-method`, `--bond-scale`, `--cutoff`, `--edges {both,bonds,radius,none}`, `--models`, `--max-cells`, `--cache-dir`, `--offline` |
 
-The title shows the dataset, the molecule index, the number of atoms and the energy of that geometry for the selected energy method, as OpenQDC returns it (QM9 energies carry OpenQDC's unit label, see [The datasets](#the-datasets)). The page stores the energies of **every** energy column for every molecule, so the *energy method* menu switches between them without rereading anything; `energy_method` (index or name, default 0; `--energy-method`) only chooses which one is shown first, and a column that was not computed for a geometry shows *not computed*. The dataset is downloaded first if it is not cached, and every index is checked before the file is written.
+The title shows the dataset, the molecule index, the number of atoms and the energy of that geometry for the selected energy method in eV, using the shared loader's [unit handling](#units). The page stores the energies of **every** energy column for every molecule, so the *energy method* menu switches between them without rereading anything; `energy_method` (index or name, default 0; `--energy-method`) only chooses which one is shown first, and a column that was not computed for a geometry shows *not computed*. The dataset is downloaded first if it is not cached, and every index is checked before the file is written.
 
 ### Liftings
 
@@ -928,7 +930,7 @@ The hop counts are exact for MACE's graph; what the page does **not** show is ho
 | Download starts again / cache looks empty | The cached data was removed. Check `ls datasets/openqdc`; the next run downloads again |
 | Everything is downloaded twice | Runs used different cache folders. Set `OPENQDC_CACHE_DIR` once and keep it |
 | MACE refuses a dataset | Its energies are not total energies (e.g. QM8). Pick another dataset, or pass `--allow-non-total` |
-| Errors hundreds of times too large (QM9, QM7b) | OpenQDC's energy-unit label problem (see below) |
+| Errors hundreds of times too large (QM9, QM7b) | Check that the run uses corrected `_kcalmol_ev_v1` data and fresh checkpoints, see [Units](#units) |
 | `Checkpoints of an earlier run moved to ...` (MACE) | A run with the same name existed; its checkpoints were set aside so they cannot be picked as the new best model. Delete the `checkpoints_previous_*` folder when you do not need it |
 | `Another run is already using ...` (MACE) | A run with identical settings is active. Wait, or give the new run its own `--name` |
 | `[wait] ...` | Another job is downloading or preprocessing the same data; the job continues by itself |
@@ -939,8 +941,8 @@ The hop counts are exact for MACE's graph; what the page does **not** show is ho
 
 ## Known limitations
 
-- **Wrong OpenQDC unit labels (not corrected).** The QM9 and QM7b energies are labelled hartree but the numbers are kcal/mol. Dividing a stored value by 627.509 gives Hartree (methane: -40.4789 Ha, the published QM9 U0). Converted with OpenQDC's eV factor the values come out about 627 times too large (QM9 molecule 0: -7,223,240 eV instead of about -11,400 eV), so errors reported in eV are that much too large. QM7b has the same problem. Other datasets may have similar errors; compare a molecule you know before trusting a new dataset.
-- **Warnings.** Opening QM9, QM7b or MultixcQM9 logs a one-time warning about the caveats described here (`ENERGY_NOTES` in `openqdc_utils.py`); the values themselves are used unchanged.
+- **Historical QM9/QM7b runs.** Before the [source-unit correction](#units), energies and MAE/RMSE labelled eV were about 627.509 times too large. Methane (OpenQDC QM9 row 4355) should be about -1101.4878 eV, rather than -691194.0292. Dividing old reported errors by 627.509 restores their physical scale but does not reproduce training with correctly scaled targets. Other datasets have not received this correction; validate their source units separately.
+- **Warnings.** Opening MultixcQM9 logs a one-time warning about its target semantics (`ENERGY_NOTES` in `openqdc_utils.py`).
 - **MultixcQM9** `energies` are atomization-type values (about -4 to -7 eV per atom, not thousands of eV): the default "total energy" target is not a total energy there. The per-element baseline is still a valid linear fit.
 - **QM8** columns are excitation energies, not total energies (MACE refuses it unless `--allow-non-total`), and its positions are labelled bohr but look like Angstrom. **ISO17** positions look like bohr although labelled Angstrom. Neither is corrected, and neither has a config in the repo.
 - **QM7** cannot be used: the remote OpenQDC copy contains only zeros.
