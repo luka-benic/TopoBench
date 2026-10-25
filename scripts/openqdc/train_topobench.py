@@ -21,6 +21,7 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 from generate_configs import configured_energy_method, ensure_config
 from omegaconf import OmegaConf
@@ -56,6 +57,132 @@ def hydra_value(value: object) -> str:
     return json.dumps(text)
 
 
+def build_command(
+    model: str,
+    args: argparse.Namespace,
+    extra: list[str],
+    name: str,
+    config: Path,
+    column: int,
+    method: int | None,
+    many_models: bool,
+) -> list[str]:
+    """Build the ``python -m topobench`` command that trains one model.
+
+    Parameters
+    ----------
+    model : str
+        Model config, e.g. ``"graph/gcn"``.
+    args : argparse.Namespace
+        The parsed arguments of the script.
+    extra : list[str]
+        Hydra overrides given after ``--``.
+    name : str
+        Canonical dataset name.
+    config : pathlib.Path
+        The dataset yaml.
+    column : int
+        The energy column in use.
+    method : int or None
+        The energy column given on the command line (None: the yaml's).
+    many_models : bool
+        True when several models are trained in this call (an explicit
+        ``--wandb-name`` then gets the model name appended).
+
+    Returns
+    -------
+    list[str]
+        The command, as a list for ``subprocess``.
+    """
+    params = "dataset.loader.parameters"
+    overrides = [
+        f"dataset=graph/{config.stem}",
+        f"model={model}",
+        f"logger={'wandb' if args.wandb else args.logger}",
+    ]
+    if args.loss:
+        overrides.append(f"dataset.parameters.loss_type={args.loss}")
+    metrics = list(args.metrics) if args.metrics else None
+    if args.monitor_metric:
+        overrides.append(
+            f"dataset.parameters.monitor_metric={args.monitor_metric}"
+        )
+        # The monitored metric must be among the reported ones.
+        metrics = metrics or ["mae", "mse"]
+        if args.monitor_metric not in metrics:
+            metrics.append(args.monitor_metric)
+    if metrics:
+        overrides.append(f"+dataset.parameters.metrics=[{','.join(metrics)}]")
+    if args.wandb:
+        run_name = "_".join(
+            [name, model.replace("/", "-"), f"m{column}"]
+            + ([f"n{args.max_samples}"] if args.max_samples else [])
+        )
+        if args.wandb_name:
+            run_name = (
+                f"{args.wandb_name}_{model.replace('/', '-')}"
+                if many_models
+                else args.wandb_name
+            )
+        overrides += [
+            f"logger.wandb.project={hydra_value(args.wandb_project)}",
+            f"+logger.wandb.name={hydra_value(run_name)}",
+        ]
+        if args.wandb_entity:
+            overrides.append(
+                f"+logger.wandb.entity={hydra_value(args.wandb_entity)}"
+            )
+        if args.wandb_group:
+            overrides.append(
+                f"logger.wandb.group={hydra_value(args.wandb_group)}"
+            )
+        tags = args.wandb_tags or [name, model.replace("/", "-")]
+        overrides.append(
+            f"logger.wandb.tags=[{','.join(hydra_value(t) for t in tags)}]"
+        )
+    if method is not None:
+        overrides.append(f"{params}.energy_method={method}")
+    for key, value in [
+        (f"{params}.target", args.target),
+        (f"{params}.max_samples", args.max_samples),
+        (f"{params}.subsample_seed", args.subsample_seed),
+        (f"{params}.baseline", args.baseline),
+        (f"{params}.split_seed", args.split_seed),
+        (f"{params}.valid_fraction", args.valid_fraction),
+        (f"{params}.test_fraction", args.test_fraction),
+        ("trainer.max_epochs", args.epochs),
+        ("dataset.dataloader_params.batch_size", args.batch_size),
+        ("seed", args.seed),
+    ]:
+        if value is not None:
+            overrides.append(f"{key}={value}")
+
+    # The target of the run: a Hydra override, else the flag, else the yaml.
+    target = args.target or OmegaConf.load(config).loader.parameters.target
+    for item in extra:
+        if item.startswith(f"{params}.target="):
+            target = item.split("=", 1)[1]
+    # Always saves the split of the run (when training starts); unless
+    # --no-test-results it also saves the per-molecule test predictions (.txt)
+    # and a parity plot when training ends, in <run folder>/test_results.
+    callback = "callbacks.openqdc_test_results"
+    overrides += [
+        f"+{callback}._target_=topobench.callbacks.openqdc_test_results.OpenQDCTestResults",
+        f"+{callback}.dataset={name}",
+        f"+{callback}.model={model}",
+        f"+{callback}.energy_method={column}",
+        f"+{callback}.per_atom={str(target == PER_ATOM).lower()}",
+        f"+{callback}.save_results={str(not args.no_test_results).lower()}",
+    ]
+    if target == PER_ATOM and not any("pooling_type" in a for a in extra):
+        # The target is an intensive per-atom energy: average over the atoms
+        # instead of summing, so the network does not have to learn 1/N.
+        overrides.append("++model.readout.pooling_type=mean")
+        print("Per-atom target: model.readout.pooling_type=mean")
+
+    return [sys.executable, "-m", "topobench", *overrides, *extra]
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument(
@@ -63,8 +190,12 @@ def main() -> None:
     )
     p.add_argument(
         "--model",
-        default="graph/gcn",
-        help="TopoBench model config, e.g. graph/gcn, simplicial/scn, cell/cwn",
+        nargs="+",
+        default=["graph/gcn"],
+        metavar="MODEL",
+        help="TopoBench model config(s), e.g. graph/gcn simplicial/scn "
+        "cell/cwn; several models are trained one after another on the "
+        "same data",
     )
     p.add_argument(
         "--energy-method",
@@ -200,89 +331,37 @@ def main() -> None:
     loader_overrides.update(extra_params)
     prepare_topobench(name, args.cache_dir, method, loader_overrides)
 
-    params = "dataset.loader.parameters"
-    overrides = [
-        f"dataset=graph/{config.stem}",
-        f"model={args.model}",
-        f"logger={'wandb' if args.wandb else args.logger}",
+    models = list(dict.fromkeys(args.model))  # repeated names run once
+    missing = [
+        m
+        for m in models
+        if not (PROJECT_ROOT / "configs" / "model" / f"{m}.yaml").exists()
     ]
-    if args.loss:
-        overrides.append(f"dataset.parameters.loss_type={args.loss}")
-    metrics = list(args.metrics) if args.metrics else None
-    if args.monitor_metric:
-        overrides.append(
-            f"dataset.parameters.monitor_metric={args.monitor_metric}"
+    if missing:
+        raise SystemExit(
+            f"Unknown model config(s): {', '.join(missing)} "
+            "(see configs/model/<domain>/<name>.yaml)."
         )
-        # The monitored metric must be among the reported ones.
-        metrics = metrics or ["mae", "mse"]
-        if args.monitor_metric not in metrics:
-            metrics.append(args.monitor_metric)
-    if metrics:
-        overrides.append(f"+dataset.parameters.metrics=[{','.join(metrics)}]")
-    if args.wandb:
-        run_name = args.wandb_name or "_".join(
-            [name, args.model.replace("/", "-"), f"m{column}"]
-            + ([f"n{args.max_samples}"] if args.max_samples else [])
+    results = []
+    for number, model in enumerate(models, 1):
+        print(
+            f"\n===== model {number}/{len(models)}: {model} =====", flush=True
         )
-        overrides += [
-            f"logger.wandb.project={hydra_value(args.wandb_project)}",
-            f"+logger.wandb.name={hydra_value(run_name)}",
-        ]
-        if args.wandb_entity:
-            overrides.append(
-                f"+logger.wandb.entity={hydra_value(args.wandb_entity)}"
-            )
-        if args.wandb_group:
-            overrides.append(
-                f"logger.wandb.group={hydra_value(args.wandb_group)}"
-            )
-        tags = args.wandb_tags or [name, args.model.replace("/", "-")]
-        overrides.append(
-            f"logger.wandb.tags=[{','.join(hydra_value(t) for t in tags)}]"
+        cmd = build_command(
+            model, args, extra, name, config, column, method, len(models) > 1
         )
-    if method is not None:
-        overrides.append(f"{params}.energy_method={method}")
-    for key, value in [
-        (f"{params}.target", args.target),
-        (f"{params}.max_samples", args.max_samples),
-        (f"{params}.subsample_seed", args.subsample_seed),
-        (f"{params}.baseline", args.baseline),
-        (f"{params}.split_seed", args.split_seed),
-        (f"{params}.valid_fraction", args.valid_fraction),
-        (f"{params}.test_fraction", args.test_fraction),
-        ("trainer.max_epochs", args.epochs),
-        ("dataset.dataloader_params.batch_size", args.batch_size),
-        ("seed", args.seed),
-    ]:
-        if value is not None:
-            overrides.append(f"{key}={value}")
-
-    # The target of the run: a Hydra override, else the flag, else the yaml.
-    target = args.target or OmegaConf.load(config).loader.parameters.target
-    for item in extra:
-        if item.startswith(f"{params}.target="):
-            target = item.split("=", 1)[1]
-    # Always saves the split of the run (when training starts); unless
-    # --no-test-results it also saves the per-molecule test predictions (.txt)
-    # and a parity plot when training ends, in <run folder>/test_results.
-    callback = "callbacks.openqdc_test_results"
-    overrides += [
-        f"+{callback}._target_=topobench.callbacks.openqdc_test_results.OpenQDCTestResults",
-        f"+{callback}.dataset={name}",
-        f"+{callback}.model={args.model}",
-        f"+{callback}.energy_method={column}",
-        f"+{callback}.per_atom={str(target == PER_ATOM).lower()}",
-        f"+{callback}.save_results={str(not args.no_test_results).lower()}",
-    ]
-    if target == PER_ATOM and not any("pooling_type" in a for a in extra):
-        # The target is an intensive per-atom energy: average over the atoms
-        # instead of summing, so the network does not have to learn 1/N.
-        overrides.append("++model.readout.pooling_type=mean")
-        print("Per-atom target: model.readout.pooling_type=mean")
-
-    cmd = [sys.executable, "-m", "topobench", *overrides, *extra]
-    print(" ".join(cmd))
-    subprocess.run(cmd, check=True, cwd=PROJECT_ROOT)
+        print(" ".join(cmd), flush=True)
+        results.append(
+            (model, subprocess.run(cmd, cwd=PROJECT_ROOT).returncode)
+        )
+    if len(models) > 1:
+        print("\nSummary:")
+        for model, code in results:
+            status = "ok" if code == 0 else f"FAILED (exit code {code})"
+            print(f"  {model}: {status}")
+    failed = [code for _, code in results if code]
+    if failed:
+        sys.exit(failed[0])
 
 
 if __name__ == "__main__":

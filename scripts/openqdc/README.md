@@ -93,7 +93,7 @@ The first run downloads the dataset and preprocesses it; later runs reuse both. 
 | `topobench/callbacks/openqdc_test_results.py` | TopoBench callback that saves `split.txt` when training starts and the test-set predictions when it ends |
 | `scripts/openqdc/mace_test_results.py` | Evaluates the best MACE model on `test.xyz` and saves the same files; `save_mace_split` writes `split.txt` |
 | `scripts/openqdc/run_mace_train.py` | Starts MACE's training for energy-only data: skips the force terms of the loss so forces need not be computed, and makes W&B logging work without forces |
-| `test/data/utils/test_openqdc_*.py`, `test_split_concurrency.py`, `test/utils/test_openqdc_{results,export,mace_launcher,viewer}.py`, `test/utils/test_mace_viewer.py` | Unit tests |
+| `test/data/utils/test_openqdc_*.py`, `test_split_concurrency.py`, `test/utils/test_openqdc_{results,export,mace_launcher,train_topobench,viewer}.py`, `test/utils/test_mace_viewer.py` | Unit tests |
 
 ## Concepts and conventions
 
@@ -298,10 +298,24 @@ python scripts/openqdc/train_topobench.py --dataset QM9 --model graph/gcn -- \
     optimizer.parameters.lr=0.001 dataset.loader.parameters.edge_method=radius
 ```
 
+**Several models in one call.** `--model` accepts a list; the models are trained one after another, in the order given, on the same data:
+
+```bash
+python scripts/openqdc/train_topobench.py --dataset QM9 --max-samples 20000 --epochs 50 \
+    --model graph/gcn graph/gin hypergraph/unignn2 cell/cwn combinatorial/etnn_coordinate_policy_physical
+scripts/openqdc/sub_openqdc.sh topobench 3 --dataset QM9 --model graph/gcn graph/gin   # also through the submission script
+```
+
+- The data is checked, downloaded and converted once, before the first model; every model then has its own run folder (`logs/train/runs/<timestamp>_<pid>/`) with its own `test_results/`.
+- A model whose training fails does not stop the others. At the end a summary lists each model as `ok` or `FAILED (exit code ...)`, and the script exits with the exit code of the first failure (0 if all succeeded).
+- A name that is listed twice is trained once, and an unknown model name stops the script before anything is trained.
+- With `--wandb` each model is its own W&B run; an explicit `--wandb-name` gets the model appended (`<name>_graph-gcn`), without it the usual derived name is used.
+- Flags and Hydra overrides after `--` apply to every model, so a model-specific override such as `model.tune_gnn=GIN` belongs in a call of its own. To train the models in parallel instead, start one call per model, each on its own GPU.
+
 | Option | Default | Meaning |
 |---|---|---|
 | `--dataset` | required | OpenQDC dataset name, case-insensitive |
-| `--model` | `graph/gcn` | Any model config under `configs/model/`, e.g. `graph/gin`, `simplicial/scn`, `cell/cwn`, `hypergraph/unignn2` |
+| `--model` | `graph/gcn` | One or several model configs under `configs/model/`, e.g. `graph/gin`, `simplicial/scn`, `cell/cwn`, `hypergraph/unignn2`; several are trained one after another ([below](#several-models-in-one-call)) |
 | `--energy-method` | from the yaml | Energy column, index or name |
 | `--target` | from the yaml (`energies`) | `energies`, `formation_energies` or `per_atom_formation_energies` |
 | `--max-samples` | all | Random subset of molecules (recommended for datasets above ~500k molecules) |
@@ -945,7 +959,8 @@ The hop counts are exact for MACE's graph; what the page does **not** show is ho
 .venv/bin/python -m pytest test/data/utils/test_openqdc_utils.py \
     test/data/utils/test_openqdc_integrity.py test/data/utils/test_split_concurrency.py \
     test/utils/test_openqdc_results.py test/data/utils/test_openqdc_split.py test/utils/test_openqdc_viewer.py \
-    test/utils/test_openqdc_export.py test/utils/test_openqdc_mace_launcher.py -q
+    test/utils/test_openqdc_export.py test/utils/test_openqdc_mace_launcher.py \
+    test/utils/test_openqdc_train_topobench.py -q
 .venv/bin/python -m pytest test/nn/backbones/combinatorial/test_etnn_*.py test/pipeline/test_etnn_pipeline.py -q   # ETNN
 .venv/bin/pre-commit run --files <changed files>     # ruff, ruff-format, numpydoc, yaml, ...
 ```
