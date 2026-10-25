@@ -213,3 +213,6 @@ uv.lock
 # molecule viewer output (openqdc_viewer.py)
 figures_tb/
 figures_mace/
+
+# GPSE weights downloaded by graph/gps
+GPSE_pretrained/

@@ -312,15 +312,27 @@ python scripts/openqdc/train_topobench.py --dataset QM9 --model graph/gcn -- \
 | `--cache-dir` | see [Where files are saved](#where-files-are-saved) | OpenQDC data location |
 | `--regen-config` | off | Re-detect the elements and rewrite the dataset yaml |
 
-Any model config under `configs/model/` can be used with `--model <domain>/<name>`. Examples:
+Pass any model config of `configs/model/` as `--model <domain>/<name>`. These run on the OpenQDC graphs with their default settings:
 
 | Domain | Models |
 |---|---|
-| graph | `graph/gcn`, `graph/gin`, `graph/gat` |
-| simplicial | `simplicial/scn`, `simplicial/san`, `simplicial/topotune` |
-| cell | `cell/cwn`, `cell/can`, `cell/topotune` |
-| hypergraph | `hypergraph/unignn`, `hypergraph/unignn2`, `hypergraph/edgnn`, `hypergraph/alldeepset`, `hypergraph/allsettransformer` |
+| graph | `graph/gcn`, `graph/gin`, `graph/gat`, `graph/gcn_dgm`, `graph/gps`, `graph/graph_mlp`, `graph/nsd` |
+| pointcloud | `pointcloud/deepset` |
+| simplicial | `simplicial/san`, `simplicial/scn`, `simplicial/sccnn`, `simplicial/sccnn_custom`, `simplicial/sann`, `simplicial/hopse_g`, `simplicial/hopse_m`, `simplicial/topotune` |
+| cell | `cell/can`, `cell/cccn`, `cell/ccxn`, `cell/cwn`, `cell/hopse_g`, `cell/hopse_m`, `cell/topotune`, `cell/topotune_onehasse` |
+| hypergraph | `hypergraph/unignn`, `hypergraph/unignn2`, `hypergraph/edhnn`, `hypergraph/alldeepset`, `hypergraph/allsettransformer` |
 | combinatorial | `combinatorial/topotune`, `combinatorial/etnn_coordinate_policy_{none,lappe,physical}` (see [TopoTune and ETNN](#topotune-and-etnn)) |
+
+These configs do **not** run out of the box on the OpenQDC graphs:
+
+| Model config | Why |
+|---|---|
+| `simplicial/topotune_onehasse` | runs with `-- model.tune_gnn=IdentityGCN` (its default `GCN` does not exist in `topobench.nn.backbones.graph`) |
+| `non_relational/mlp` | the config needs a fixed `dataset.parameters.num_nodes`, but molecules differ in size |
+| `graph/hopse_gcn`, `graph/hopse_gat`, `graph/hopse_gin` | the config reads `transforms.hopse_encoding`, which the default transform selection does not provide (`cell/hopse_*` and `simplicial/hopse_*` work) |
+| `cell/sann` | `KeyError: 'incidence_3'`: it needs rank-3 cells, which the cycle lifting does not produce for molecules |
+| `simplicial/sccn` | `KeyError: 'x_3'`: it needs rank-3 simplices, which molecular graphs rarely have |
+| `cell/sann_online`, `simplicial/sann_online` | configuration errors (`infer_in_hasse_graph_agg_dim() missing 2 required positional arguments`; encoder `SANNOnlineFeatureEncoder` not found) |
 
 **Hypergraph, simplicial and cell models.** The OpenQDC molecules are graphs, and TopoBench lifts them to the domain of the model automatically, so these models need no extra setup: `--model hypergraph/unignn2` is enough. The default lift for hypergraph models is `HypergraphKHopLifting` with k=1. Another lift can be chosen after `--`, for example `-- transforms=liftings/graph2hypergraph/knn` (the lift configs are in `configs/transforms/liftings/graph2hypergraph/`). Not every lift suits molecular graphs, so check a lift other than the default on a few molecules first.
 

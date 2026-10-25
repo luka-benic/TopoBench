@@ -1,30 +1,30 @@
-"""Unit tests for EDGNN."""
+"""Unit tests for EDHNN."""
 
 import pytest
 
 import torch
 from ...._utils.nn_module_auto_test import NNModuleAutoTest
-from topobench.nn.backbones.hypergraph.edgnn import (
-    EDGNN,
-    customMLP as edgnn_MLP,
+from topobench.nn.backbones.hypergraph.edhnn import (
+    EDHNN,
+    customMLP as edhnn_MLP,
     PlainMLP,
     EquivSetConv,
     JumpLinkConv,
     MeanDegConv
 )
 
-def test_EDGNN(random_graph_input):
-    """ Unit test for EDGNN.
+def test_EDHNN(random_graph_input):
+    """ Unit test for EDHNN.
 
     Parameters
     ----------
     random_graph_input : Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]
-        A tuple of input tensors for testing EDGNN.
+        A tuple of input tensors for testing EDHNN.
     """
     x, x_1, x_2, edges_1, edges_2 = random_graph_input
     auto_test = NNModuleAutoTest([
         {
-            "module" : EDGNN,
+            "module" : EDHNN,
             "init": (x.shape[1], ),
             "forward": (x, edges_1),
             "assert_shape": x.shape
@@ -38,7 +38,7 @@ def test_EDGNN(random_graph_input):
 
     auto_test2 = NNModuleAutoTest([
         {
-            "module" : EDGNN,
+            "module" : EDHNN,
             "init": {"num_features": x.shape[1],
                      "edconv_type": "JumpLink"},
             "forward": (x, sparse_edges_1),
@@ -47,19 +47,19 @@ def test_EDGNN(random_graph_input):
     ])
     auto_test2.run()
 
-    model = EDGNN(x.shape[1], edconv_type="MeanDeg")
+    model = EDHNN(x.shape[1], edconv_type="MeanDeg")
     model.reset_parameters()
 
     with pytest.raises(ValueError):
-        model = EDGNN(x.shape[1], edconv_type="Invalid")
+        model = EDHNN(x.shape[1], edconv_type="Invalid")
 
-def test_edgnn_MLP(random_graph_input):
-    """ Unit test for edgnn_MLP.
+def test_edhnn_MLP(random_graph_input):
+    """ Unit test for edhnn_MLP.
 
     Parameters
     ----------
     random_graph_input : Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]
-        A tuple of input tensors for testing edgnn_MLP.
+        A tuple of input tensors for testing edhnn_MLP.
     """
     x, x_1, x_2, edges_1, edges_2 = random_graph_input
     hid_channels = 4
@@ -70,7 +70,7 @@ def test_edgnn_MLP(random_graph_input):
             for InputNorm in [True, False]:
                 auto_test = NNModuleAutoTest([
                     {
-                        "module" : edgnn_MLP,
+                        "module" : edhnn_MLP,
                         "init": (x.shape[1], hid_channels, out_channels, num_layers, 0.5, Normalization, InputNorm),
                         "forward": (x, ),
                         "assert_shape": (x.shape[0], out_channels)
@@ -78,7 +78,7 @@ def test_edgnn_MLP(random_graph_input):
                 ])
                 auto_test.run()
 
-    model = edgnn_MLP(x.shape[1], hid_channels, out_channels, num_layers, 0.5, 'bn', True)
+    model = edhnn_MLP(x.shape[1], hid_channels, out_channels, num_layers, 0.5, 'bn', True)
     model.reset_parameters()
     model.flops(x)
 

@@ -1,4 +1,4 @@
-"""Class implementing the EDGNN model."""
+"""Class implementing the EDHNN model."""
 
 import numpy as np
 import torch
@@ -8,8 +8,8 @@ import torch_geometric
 import torch_scatter
 
 
-class EDGNN(nn.Module):
-    """EDGNN model.
+class EDHNN(nn.Module):
+    """EDHNN model.
 
     Parameters
     ----------

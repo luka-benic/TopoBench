@@ -329,7 +329,7 @@ Hypergraphs
 |                                   | Networks <https://open            |
 |                                   | review.net/pdf?id=hpBTIv2uy_E>`__ |
 +-----------------------------------+-----------------------------------+
-| EDGNN                             | `Equivariant Hypergraph Diffusion |
+| EDHNN                             | `Equivariant Hypergraph Diffusion |
 |                                   | Neural                            |
 |                                   | Operators <htt                    |
 |                                   | ps://arxiv.org/pdf/2207.06680>`__ |
