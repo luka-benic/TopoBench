@@ -40,14 +40,15 @@ Both pipelines read the data through the same loader, so they see the same molec
 15. [The submission script (GPU or CPU)](#the-submission-script-gpu-or-cpu)
 16. [Running several jobs at once](#running-several-jobs-at-once)
 17. [Where files are saved](#where-files-are-saved)
-18. [Generating dataset configs](#generating-dataset-configs)
-19. [Using the data in Python](#using-the-data-in-python)
-20. [Viewing molecules, edges and liftings](#viewing-molecules-edges-and-liftings)
-21. [Visualising MACE's cutoff radius and number of layers](#visualising-maces-cutoff-radius-and-number-of-layers)
-22. [Comparing MACE and TopoBench](#comparing-mace-and-topobench)
-23. [Troubleshooting](#troubleshooting)
-24. [Known limitations](#known-limitations)
-25. [Development: tests and checks](#development-tests-and-checks)
+18. [Running on the UCSB servers (parka and hall)](#running-on-the-ucsb-servers-parka-and-hall)
+19. [Generating dataset configs](#generating-dataset-configs)
+20. [Using the data in Python](#using-the-data-in-python)
+21. [Viewing molecules, edges and liftings](#viewing-molecules-edges-and-liftings)
+22. [Visualising MACE's cutoff radius and number of layers](#visualising-maces-cutoff-radius-and-number-of-layers)
+23. [Comparing MACE and TopoBench](#comparing-mace-and-topobench)
+24. [Troubleshooting](#troubleshooting)
+25. [Known limitations](#known-limitations)
+26. [Development: tests and checks](#development-tests-and-checks)
 
 ## Quick start
 
@@ -765,6 +766,94 @@ Not covered: GPU memory (each job needs its own GPU or enough free memory), and 
 `datasets/` and `logs/` are in `.gitignore`. Move the OpenQDC data to another disk with `export OPENQDC_CACHE_DIR=/absolute/path` **before** starting Python (OpenQDC reads the variable when it is imported).
 
 OpenQDC does not delete cached data by itself. Datasets can be hundreds of GB, so check free space before downloading a large one. The folder names contain the conversion settings but no version: if the conversion code changes, delete the old folders (`datasets/graph/openqdc` and `datasets/openqdc_xyz`) so that the data is made again.
+
+## Running on the UCSB servers (parka and hall)
+
+On parka and hall the large files (OpenQDC data, TopoBench graphs, `.xyz` exports, checkpoints, logs, test results) go to `/scratch/$USER`, not to the home directory or the repository. Nothing in the code has to be changed for this; only the locations are redirected. The same steps apply on both servers. The paths use `$USER` (your login name), so the commands can be copied as they are; this assumes your folder under `/scratch` is named like your login (otherwise replace `$USER` with that folder name). Note that `/scratch` is a different disk on each server, so data prepared on one is not visible on the other.
+
+### One-time setup (per server)
+
+```bash
+# 1. Clone the repository and create the uv environment (.venv) as in the Quick start.
+cd ~/TopoBench
+source .venv/bin/activate
+
+# 2. Create the folders on the scratch disk.
+mkdir -p /scratch/$USER/openqdc /scratch/$USER/datasets /scratch/$USER/logs
+
+# 3. Send the OpenQDC cache to scratch in every new shell.
+echo 'export OPENQDC_CACHE_DIR=/scratch/$USER/openqdc' >> ~/.bashrc
+source ~/.bashrc
+echo $OPENQDC_CACHE_DIR            # must print /scratch/$USER/openqdc
+
+# 4. Make the repository's datasets/ and logs/ folders point to scratch.
+#    (If they already exist and contain data, move it first: mv datasets/* /scratch/$USER/datasets/)
+rmdir datasets logs 2>/dev/null     # only removes them if empty
+ln -s /scratch/$USER/datasets datasets
+ln -s /scratch/$USER/logs     logs
+```
+
+`export` only lasts for the current shell, which is why step 3 puts it in `~/.bashrc`. A job started some other way (for example from a script run by `cron`, or `ssh host command`) may not read `~/.bashrc`; put the same `export` line at the top of that script.
+
+Why the symbolic links instead of command-line overrides? Several things write under the repository: the TopoBench graphs (`datasets/graph/openqdc`), the MACE `.xyz` files (`datasets/openqdc_xyz`), and the runs (`logs/train/runs`, `logs/mace_openqdc`). The data-preparation step run by `train_topobench.py` always writes the graphs to `<repo>/datasets`, even if you give a different `paths.data_dir` to the training, so overriding only the training would convert the data twice. With the links, every script, including `prepare_data.py` and `export_xyz.py`, uses scratch without any extra argument, and all the paths in this README stay valid.
+
+### Training
+
+Use the submission script exactly as before; check the GPUs first.
+
+```bash
+nvidia-smi                                   # pick a GPU with free memory (its number is used below)
+
+# TopoBench, GPU 1
+nohup scripts/openqdc/sub_openqdc.sh topobench 1 --dataset QM9 --model graph/gcn > topobench_qm9.log 2>&1 &
+
+# MACE, GPU 2
+nohup scripts/openqdc/sub_openqdc.sh mace 2 --dataset QM9 > mace_qm9.log 2>&1 &
+
+tail -f topobench_qm9.log                    # follow a run
+```
+
+Keep the `.log` files of `nohup` somewhere with space (they can be long); `/scratch/$USER/logs/` is a good place: `> /scratch/$USER/logs/mace_qm9.log`.
+
+### Without the symbolic links
+
+If you prefer not to link the folders, give the locations explicitly. This is more error-prone, because every location has to be given:
+
+```bash
+export OPENQDC_CACHE_DIR=/scratch/$USER/openqdc
+
+# TopoBench: runs and data folder as Hydra overrides after `--`
+scripts/openqdc/sub_openqdc.sh topobench 1 --dataset QM9 --model graph/gcn \
+    -- paths.log_dir=/scratch/$USER/logs paths.data_dir=/scratch/$USER/datasets
+
+# MACE: run folder and .xyz export folder as flags
+scripts/openqdc/sub_openqdc.sh mace 2 --dataset QM9 \
+    --work-dir /scratch/$USER/mace_openqdc --xyz-root /scratch/$USER/openqdc_xyz
+```
+
+With this variant the graphs are still first converted into `<repo>/datasets/graph/openqdc` by the preparation step (see above), so use the links if the home disk is small.
+
+### Checking that nothing leaks into the home directory
+
+After the first short run (`--epochs 1 --max-samples 500`):
+
+```bash
+ls /scratch/$USER/logs /scratch/$USER/datasets /scratch/$USER/openqdc   # the new run should be here
+du -sh ~/TopoBench/datasets ~/TopoBench/logs ~/.cache/wandb 2>/dev/null
+```
+
+`~/TopoBench/datasets` and `~/TopoBench/logs` should show the size of the link only. Weights & Biases keeps its own cache outside the run folder; to move it as well, add to `~/.bashrc`:
+
+```bash
+export WANDB_DIR=/scratch/$USER/wandb WANDB_CACHE_DIR=/scratch/$USER/wandb/cache WANDB_DATA_DIR=/scratch/$USER/wandb/data
+mkdir -p /scratch/$USER/wandb
+```
+
+### Notes
+
+- Scratch disks are usually not backed up and may be cleaned. Copy the results you want to keep (`test_results/`, final checkpoints, the logs you cite) to permanent storage when a study is finished.
+- Several jobs at once are fine on one server (see [Running several jobs at once](#running-several-jobs-at-once)); each needs its own GPU or enough free memory.
+- Hugging-face/pip/uv caches are not affected by these settings. If the home quota is small, set `UV_CACHE_DIR=/scratch/$USER/uv-cache` before running `uv sync`.
 
 ## Generating dataset configs
 
