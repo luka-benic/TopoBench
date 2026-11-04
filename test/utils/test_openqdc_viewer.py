@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+import torch
 
 from topobench.data.utils.openqdc_utils import molecular_edges
 from topobench.utils.openqdc_viewer import (
@@ -152,7 +153,10 @@ def test_selective_liftings_resolve_model_specific_operators():
         model_liftings("simplicial/san")
     )
     for model in ["simplicial/scn", "simplicial/san"]:
-        assert model_liftings(model)[0]["transform_name"] == "SimplicialCliqueLiftingSelective"
+        assert (
+            model_liftings(model)[0]["transform_name"]
+            == "SimplicialCliqueLiftingSelective"
+        )
     assert lifting_key(model_liftings("simplicial/scn")) != lifting_key(
         model_liftings("cell/cwn")
     )
@@ -331,3 +335,32 @@ def test_dense_cutoff_graph_has_no_maximal_triangles():
     lifting = model_liftings("combinatorial/topotune")
     cells = lift_to_cells(z, pos, lifting, graph_edges="radius", cutoff=5.0)
     assert not any(cells.values())
+
+
+def test_edge_distances_are_computed_in_double_precision():
+    """A pair 1e-8 A inside the cutoff is connected (float32 would round to r_max)."""
+    inside = [[0, 0, 0], [2.0 - 1e-8, 0, 0]]
+    outside = [[0, 0, 0], [2.0 + 1e-8, 0, 0]]
+    assert undirected(molecular_edges(inside, [6, 6], "radius", cutoff=2.0))
+    assert not undirected(
+        molecular_edges(outside, [6, 6], "radius", cutoff=2.0)
+    )
+
+
+def test_radius_edges_agree_with_mace_for_pairs_at_the_cutoff():
+    pytest.importorskip("mace")
+    from mace.data.neighborhood import get_neighborhood
+
+    rng = np.random.default_rng(0)
+    for delta in (1e-7, 1e-8, 1e-9):
+        for _ in range(100):
+            r = float(rng.choice([2.0, 3.0, 5.0]))
+            u = rng.normal(size=3)
+            u /= np.linalg.norm(u)
+            base = rng.uniform(0, 3, size=3)
+            pair = np.vstack(
+                [base, base + (r + rng.choice([-1, 1]) * delta) * u]
+            )
+            ours = molecular_edges(pair, [6, 6], "radius", cutoff=r)
+            theirs, *_ = get_neighborhood(positions=pair, cutoff=r, pbc=None)
+            assert undirected(ours) == undirected(torch.as_tensor(theirs))

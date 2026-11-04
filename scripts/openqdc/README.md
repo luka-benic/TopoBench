@@ -130,7 +130,7 @@ Both pipelines use the **total energy** by default. For datasets without isolate
 | `x` | one-hot atomic number over `atom_types`, plus the formal atomic charge (so `len(atom_types) + 1` features) |
 | `pos` | coordinates in Angstrom |
 | `z` | atomic numbers |
-| `edge_index` | bonds inferred from distances: atoms are bonded if `d < bond_scale * (r_i + r_j)` with covalent radii (`edge_method: bonds`), or all pairs within `cutoff` (`edge_method: radius`) |
+| `edge_index` | bonds inferred from distances: atoms are bonded if `d < bond_scale * (r_i + r_j)` with covalent radii (`edge_method: bonds`), or all pairs within `cutoff` (`edge_method: radius`); the distances are computed in double precision |
 | `openqdc_idx`, `n_atoms` | the OpenQDC molecule index and the number of atoms (identify the molecules in the test-set results) |
 | `energy` | the selected energy in eV, exactly as OpenQDC returns it (float64) |
 | `y` | the regression target (float32): the raw `energy` (default), or `energy` minus a per-element baseline with `baseline: per_element` |
@@ -920,7 +920,7 @@ The hop counts are exact for MACE's graph; what the page does **not** show is ho
 - Use the **same dataset, energy column, target and `--max-samples` / `--subsample-seed`**. Then both see the same molecules and energies.
 - TopoBench reports eV (`test/mae`), MACE reports meV (`MAE E / meV` in the final test table; 1 eV = 1000 meV). Both are the mean absolute error of the total energy per molecule (use the same `--baseline` in both), both measured on the best checkpoint (by validation) on a held-out 10% test set.
 - **The splits and the baseline are identical** for the same data settings, see [Splits](#splits-identical-for-mace-and-topobench).
-- **The inputs differ, as the models do.** MACE sees the element one-hot of each atom and a radius graph (`--r-max`, default 5 Å) built inside the model, and no charge. TopoBench sees the element one-hot plus the formal charge, and the graph of `edge_method` (covalent-radius bonds by default, or a radius graph with `cutoff`); most TopoBench models use only `x` and `edge_index`, not the positions. Use `edge_method: radius` with `cutoff` equal to `--r-max` for the closest graph.
+- **The inputs differ, as the models do.** MACE sees the element one-hot of each atom and a radius graph (`--r-max`, default 5 Å) built inside the model, and no charge. TopoBench sees the element one-hot plus the formal charge, and the graph of `edge_method` (covalent-radius bonds by default, or a radius graph with `cutoff`); most TopoBench models use only `x` and `edge_index`, not the positions. Use `edge_method: radius` with `cutoff` equal to `--r-max` for the closest graph: it has the same edges as MACE's graph (both connect every pair with distance below `r_max`, in both directions, without self-loops, with distances in double precision).
 
 ## Troubleshooting
 

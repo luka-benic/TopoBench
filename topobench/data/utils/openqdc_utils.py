@@ -184,7 +184,9 @@ def molecular_edges(
     """
     if method not in ("bonds", "radius"):
         raise ValueError("method must be 'bonds' or 'radius'.")
-    pos = torch.as_tensor(np.asarray(positions), dtype=torch.float32)
+    # double precision, like MACE's neighbour search (float32 distances could
+    # decide a pair within ~1e-7 Angstrom of the cutoff differently)
+    pos = torch.as_tensor(np.asarray(positions), dtype=torch.float64)
     z = torch.as_tensor(np.asarray(numbers), dtype=torch.long)
     dist = torch.cdist(pos, pos)
     if method == "bonds":
