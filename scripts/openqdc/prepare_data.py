@@ -150,6 +150,9 @@ def main() -> None:
     t.add_argument("--max-samples", type=int, default=None)
     t.add_argument("--subsample-seed", type=int, default=None)
     t.add_argument("--baseline", choices=["none", "per_element"], default=None)
+    t.add_argument("--edge-method", choices=["bonds", "radius"], default=None)
+    t.add_argument("--bond-scale", type=float, default=None)
+    t.add_argument("--cutoff", type=float, default=None)
     t.add_argument("--split-seed", type=int, default=None)
     t.add_argument("--valid-fraction", type=float, default=None)
     t.add_argument("--test-fraction", type=float, default=None)
@@ -173,6 +176,9 @@ def main() -> None:
                 "max_samples": args.max_samples,
                 "subsample_seed": args.subsample_seed,
                 "baseline": args.baseline,
+                "edge_method": args.edge_method,
+                "bond_scale": args.bond_scale,
+                "cutoff": args.cutoff,
                 "split_seed": args.split_seed,
                 "valid_fraction": args.valid_fraction,
                 "test_fraction": args.test_fraction,

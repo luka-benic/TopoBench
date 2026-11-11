@@ -147,6 +147,9 @@ def build_command(
         (f"{params}.max_samples", args.max_samples),
         (f"{params}.subsample_seed", args.subsample_seed),
         (f"{params}.baseline", args.baseline),
+        (f"{params}.edge_method", args.edge_method),
+        (f"{params}.bond_scale", args.bond_scale),
+        (f"{params}.cutoff", args.cutoff),
         (f"{params}.split_seed", args.split_seed),
         (f"{params}.valid_fraction", args.valid_fraction),
         (f"{params}.test_fraction", args.test_fraction),
@@ -221,6 +224,28 @@ def main() -> None:
         help="none: train on the raw energy; per_element: subtract per-element "
         "energies fitted on the training split. Default: the dataset yaml "
         "(none).",
+    )
+    p.add_argument(
+        "--edge-method",
+        choices=["bonds", "radius"],
+        default=None,
+        help="how the molecular graph is built: bonds (covalent-radius "
+        "rule, see --bond-scale) or radius (all pairs closer than --cutoff). "
+        "Default: the dataset yaml (bonds).",
+    )
+    p.add_argument(
+        "--bond-scale",
+        type=float,
+        default=None,
+        help="bonds rule: bond if d < bond_scale * (r_i + r_j). Default: "
+        "the dataset yaml (1.3).",
+    )
+    p.add_argument(
+        "--cutoff",
+        type=float,
+        default=None,
+        help="radius rule: distance cutoff in Angstrom, used with "
+        "--edge-method radius. Default: the dataset yaml (5.0).",
     )
     p.add_argument(
         "--split-seed",
@@ -324,6 +349,9 @@ def main() -> None:
         "max_samples": args.max_samples,
         "subsample_seed": args.subsample_seed,
         "baseline": args.baseline,
+        "edge_method": args.edge_method,
+        "bond_scale": args.bond_scale,
+        "cutoff": args.cutoff,
         "split_seed": args.split_seed,
         "valid_fraction": args.valid_fraction,
         "test_fraction": args.test_fraction,

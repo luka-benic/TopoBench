@@ -324,6 +324,9 @@ scripts/openqdc/sub_openqdc.sh topobench 3 --dataset QM9 --model graph/gcn graph
 | `--max-samples` | all | Random subset of molecules (recommended for datasets above ~500k molecules) |
 | `--subsample-seed` | from the yaml | Seed of that subset |
 | `--baseline` | from the yaml (`none`) | `none` (raw energy) or `per_element` (subtract per-element energies fitted on the training split) |
+| `--edge-method` | from the yaml (`bonds`) | `bonds` (covalent-radius rule) or `radius` (all atom pairs closer than `--cutoff`); sets `edge_method` |
+| `--bond-scale` | from the yaml (1.3) | Bonds rule: bond if `d < bond_scale * (r_i + r_j)` |
+| `--cutoff` | from the yaml (5.0) | Radius rule: cutoff in Angstrom, only used with `--edge-method radius` |
 | `--split-seed`, `--valid-fraction`, `--test-fraction` | from the yaml (0, 0.1, 0.1) | The shared split, see [Splits](#splits-identical-for-mace-and-topobench) |
 | `--epochs` | from the config | `trainer.max_epochs` |
 | `--batch-size` | 128 | Dataloader batch size |
