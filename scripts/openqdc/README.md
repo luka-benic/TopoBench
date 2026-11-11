@@ -781,11 +781,12 @@ On parka and hall the large files (OpenQDC data, TopoBench graphs, `.xyz` export
 cd ~/TopoBench
 source .venv/bin/activate
 
-# 2. Create the folders on the scratch disk.
-mkdir -p /scratch/$USER/openqdc /scratch/$USER/datasets /scratch/$USER/logs
+# 2. Create the four top-level folders on the scratch disk (the only ones to create by hand).
+mkdir -p /scratch/$USER/openqdc /scratch/$USER/datasets /scratch/$USER/logs /scratch/$USER/wandb
 
-# 3. Send the OpenQDC cache to scratch in every new shell.
+# 3. Send the OpenQDC cache and the W&B files to scratch in every new shell.
 echo 'export OPENQDC_CACHE_DIR=/scratch/$USER/openqdc' >> ~/.bashrc
+echo 'export WANDB_DIR=/scratch/$USER/wandb WANDB_CACHE_DIR=/scratch/$USER/wandb/cache WANDB_DATA_DIR=/scratch/$USER/wandb/data' >> ~/.bashrc
 source ~/.bashrc
 echo $OPENQDC_CACHE_DIR            # must print /scratch/$USER/openqdc
 
@@ -794,7 +795,14 @@ echo $OPENQDC_CACHE_DIR            # must print /scratch/$USER/openqdc
 rmdir datasets logs 2>/dev/null     # only removes them if empty
 ln -s /scratch/$USER/datasets datasets
 ln -s /scratch/$USER/logs     logs
+
+# 5. Log in to Weights & Biases once per server (only needed with --wandb). This saves the key
+#    in ~/.netrc, so it survives logging out. A plain `export WANDB_API_KEY=...` does not.
+wandb login                         # add --host <url> if your project is on a self-hosted instance
+wandb verify                        # must succeed before the first run with --wandb
 ```
+
+**What you create and what the code creates.** Only the four folders of step 2 (`openqdc`, `datasets`, `logs`, `wandb`) and the two symbolic links of step 4 have to exist before the first run. All the folders below them are created automatically when needed: `datasets/graph/openqdc/<Dataset>/...` (TopoBench graphs), `datasets/openqdc_xyz/...` (MACE exports), `logs/train/runs/...` (TopoBench runs), `logs/mace_openqdc/...` (MACE runs), `wandb/cache` and the W&B run folders. If you delete one of the four folders, recreate it before the next run; a missing target makes the `datasets`/`logs` links dangle.
 
 `export` only lasts for the current shell, which is why step 3 puts it in `~/.bashrc`. A job started some other way (for example from a script run by `cron`, or `ssh host command`) may not read `~/.bashrc`; put the same `export` line at the top of that script.
 
@@ -845,17 +853,14 @@ ls /scratch/$USER/logs /scratch/$USER/datasets /scratch/$USER/openqdc   # the ne
 du -sh ~/TopoBench/datasets ~/TopoBench/logs ~/.cache/wandb 2>/dev/null
 ```
 
-`~/TopoBench/datasets` and `~/TopoBench/logs` should show the size of the link only. Weights & Biases keeps its own cache outside the run folder; to move it as well, add to `~/.bashrc`:
-
-```bash
-export WANDB_DIR=/scratch/$USER/wandb WANDB_CACHE_DIR=/scratch/$USER/wandb/cache WANDB_DATA_DIR=/scratch/$USER/wandb/data
-mkdir -p /scratch/$USER/wandb
-```
+`~/TopoBench/datasets` and `~/TopoBench/logs` should show the size of the link only. Weights & Biases keeps its own cache outside the run folder; the `WANDB_*` exports of step 3 move it to `/scratch/$USER/wandb`, so `~/.cache/wandb` should stay tiny (a few KB). If it does not, the exports are missing in that shell (`echo $WANDB_CACHE_DIR`).
 
 ### Notes
 
 - Scratch disks are usually not backed up and may be cleaned. Copy the results you want to keep (`test_results/`, final checkpoints, the logs you cite) to permanent storage when a study is finished.
 - Several jobs at once are fine on one server (see [Running several jobs at once](#running-several-jobs-at-once)); each needs its own GPU or enough free memory.
+- Check `df -h /scratch` before a launch: the disk is shared and often nearly full, and a run that hits `OSError: [Errno 28] No space left on device` dies (it can take other jobs down with it, because logs and checkpoints cannot be written either). Sizes to expect on Alchemy (202,579 molecules): the bond graph is about 5 GB, but with `--edge-method radius --cutoff 5.0` the cached lifted datasets are far bigger (simplicial clique lifting about 93 GB or more, cell lifting about 15 GB, hypergraph lifting about 3 GB). VQM24 graphs are about 18 GB with the bond graph. For dense radius graphs use a smaller `--cutoff`, `--max-samples`, or skip the simplicial models.
+- Give every run its own `nohup` log file name (for example `topobench_<dataset>_<model>.log`): `>` truncates an existing file, so reusing a name overwrites the old log.
 - Hugging-face/pip/uv caches are not affected by these settings. If the home quota is small, set `UV_CACHE_DIR=/scratch/$USER/uv-cache` before running `uv sync`.
 
 ## Generating dataset configs
