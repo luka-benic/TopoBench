@@ -138,3 +138,93 @@ def test_baseline_choice_sets_the_e0s_of_mace(tmp_path):
     none = e0s_argument("none", [1, 6, 8])
     assert none.startswith("--E0s=")
     assert ast.literal_eval(none[len("--E0s=") :]) == {1: 0.0, 6: 0.0, 8: 0.0}
+
+
+@pytest.fixture
+def train_mace(monkeypatch, tmp_path):
+    """train_mace.py with everything heavy replaced; records the commands."""
+    import subprocess
+    import sys
+
+    scripts = str(Path(__file__).resolve().parents[2] / "scripts" / "openqdc")
+    monkeypatch.syspath_prepend(scripts)
+    spec = importlib.util.spec_from_file_location(
+        "train_mace_under_test", Path(scripts) / "train_mace.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    folder = tmp_path / "QM9_energies_m0_nall_s0" / "split_v0.1_t0.1_s0"
+    folder.mkdir(parents=True)
+    paths = {k: str(folder / f"{k}.xyz") for k in ("train", "valid", "test")}
+    monkeypatch.setattr(module, "ensure_export", lambda args: paths)
+    monkeypatch.setattr(module, "export_elements", lambda p: [1, 6, 8])
+    monkeypatch.setattr(module, "save_mace_split", lambda *a, **k: None)
+    monkeypatch.setattr(module, "save_mace_test_results", lambda *a, **k: {})
+    commands, codes = [], []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        code = codes.pop(0) if codes else 0
+        if code:
+            raise subprocess.CalledProcessError(code, cmd)
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    def run(argv, fail=()):
+        codes[:] = list(fail)
+        commands.clear()
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "train_mace.py",
+                "--dataset",
+                "QM9",
+                "--device",
+                "cpu",
+                "--work-dir",
+                str(tmp_path / "runs"),
+                *argv,
+            ],
+        )
+        module.main()
+        return list(commands)
+
+    yield run
+    sys.modules.pop(spec.name, None)
+
+
+def option(cmd, prefix):
+    return next(a for a in cmd if a.startswith(prefix)).split("=", 1)[1]
+
+
+def test_mace_seeds_are_trained_one_after_another_in_their_own_folders(
+    train_mace,
+):
+    commands = train_mace(["--seed", "0", "1", "2"])
+    assert [option(c, "--seed=") for c in commands] == ["0", "1", "2"]
+    folders = [option(c, "--work_dir=") for c in commands]
+    assert len(set(folders)) == 3  # the run name has a hash of the seed
+    assert (
+        train_mace(["--seed", "7"])
+        and option(train_mace(["--seed", "7"])[0], "--seed=") == "7"
+    )
+
+
+def test_mace_explicit_names_get_the_seed_when_several_are_trained(
+    train_mace,
+):
+    several = train_mace(["--seed", "0", "1", "--name", "exp"])
+    assert [option(c, "--name=") for c in several] == [
+        "exp_seed0",
+        "exp_seed1",
+    ]
+    single = train_mace(["--seed", "3", "--name", "exp"])
+    assert option(single[0], "--name=") == "exp"
+
+
+def test_mace_failing_seed_does_not_stop_the_others(train_mace):
+    with pytest.raises(SystemExit) as stop:
+        train_mace(["--seed", "0", "1", "2"], fail=[0, 5, 0])
+    assert stop.value.code == 5

@@ -66,6 +66,8 @@ def build_command(
     column: int,
     method: int | None,
     many_models: bool,
+    seed: int | None = None,
+    many_seeds: bool = False,
 ) -> list[str]:
     """Build the ``python -m topobench`` command that trains one model.
 
@@ -88,6 +90,11 @@ def build_command(
     many_models : bool
         True when several models are trained in this call (an explicit
         ``--wandb-name`` then gets the model name appended).
+    seed : int or None
+        Global seed of this run; None keeps the seed of the config.
+    many_seeds : bool
+        True when several seeds are trained in this call (the W&B name then
+        gets the seed appended).
 
     Returns
     -------
@@ -119,11 +126,11 @@ def build_command(
             + ([f"n{args.max_samples}"] if args.max_samples else [])
         )
         if args.wandb_name:
-            run_name = (
-                f"{args.wandb_name}_{model.replace('/', '-')}"
-                if many_models
-                else args.wandb_name
-            )
+            run_name = args.wandb_name
+            if many_models:
+                run_name += f"_{model.replace('/', '-')}"
+        if many_seeds:
+            run_name += f"_seed{seed}"
         overrides += [
             f"logger.wandb.project={hydra_value(args.wandb_project)}",
             f"+logger.wandb.name={hydra_value(run_name)}",
@@ -137,6 +144,8 @@ def build_command(
                 f"logger.wandb.group={hydra_value(args.wandb_group)}"
             )
         tags = args.wandb_tags or [name, model.replace("/", "-")]
+        if many_seeds and not args.wandb_tags:
+            tags.append(f"seed{seed}")
         overrides.append(
             f"logger.wandb.tags=[{','.join(hydra_value(t) for t in tags)}]"
         )
@@ -155,7 +164,7 @@ def build_command(
         (f"{params}.test_fraction", args.test_fraction),
         ("trainer.max_epochs", args.epochs),
         ("dataset.dataloader_params.batch_size", args.batch_size),
-        ("seed", args.seed),
+        ("seed", seed),
     ]:
         if value is not None:
             overrides.append(f"{key}={value}")
@@ -257,7 +266,17 @@ def main() -> None:
     p.add_argument("--test-fraction", type=float, default=None)
     p.add_argument("--epochs", type=int, default=None)
     p.add_argument("--batch-size", type=int, default=None)
-    p.add_argument("--seed", type=int, default=None)
+    p.add_argument(
+        "--seed",
+        type=int,
+        nargs="+",
+        default=None,
+        metavar="SEED",
+        help="global seed(s) of the training (model initialisation, batch "
+        "order); several seeds are trained one after another. The split does "
+        "not change with it (see --split-seed). Default: the seed of the "
+        "config.",
+    )
     p.add_argument(
         "--logger", default="csv", help="csv, wandb, tensorboard, ..."
     )
@@ -370,23 +389,38 @@ def main() -> None:
             f"Unknown model config(s): {', '.join(missing)} "
             "(see configs/model/<domain>/<name>.yaml)."
         )
-    results = []
-    for number, model in enumerate(models, 1):
-        print(
-            f"\n===== model {number}/{len(models)}: {model} =====", flush=True
+    seeds = list(dict.fromkeys(args.seed)) if args.seed else [None]
+    if len(seeds) > 1 and any(a.startswith("seed=") for a in extra):
+        raise SystemExit(
+            "Several --seed values cannot be combined with a seed= override "
+            "after --."
         )
+    runs = [(model, seed) for model in models for seed in seeds]
+    results = []
+    for number, (model, seed) in enumerate(runs, 1):
+        label = model if seed is None else f"{model}, seed {seed}"
+        print(f"\n===== run {number}/{len(runs)}: {label} =====", flush=True)
         cmd = build_command(
-            model, args, extra, name, config, column, method, len(models) > 1
+            model,
+            args,
+            extra,
+            name,
+            config,
+            column,
+            method,
+            len(models) > 1,
+            seed,
+            len(seeds) > 1,
         )
         print(" ".join(cmd), flush=True)
         results.append(
-            (model, subprocess.run(cmd, cwd=PROJECT_ROOT).returncode)
+            (label, subprocess.run(cmd, cwd=PROJECT_ROOT).returncode)
         )
-    if len(models) > 1:
+    if len(runs) > 1:
         print("\nSummary:")
-        for model, code in results:
+        for label, code in results:
             status = "ok" if code == 0 else f"FAILED (exit code {code})"
-            print(f"  {model}: {status}")
+            print(f"  {label}: {status}")
     failed = [code for _, code in results if code]
     if failed:
         sys.exit(failed[0])

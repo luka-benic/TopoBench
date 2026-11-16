@@ -315,6 +315,23 @@ scripts/openqdc/sub_openqdc.sh topobench 3 --dataset QM9 --model graph/gcn graph
 - With `--wandb` each model is its own W&B run; an explicit `--wandb-name` gets the model appended (`<name>_graph-gcn`), without it the usual derived name is used.
 - Flags and Hydra overrides after `--` apply to every model, so a model-specific override such as `model.tune_gnn=GIN` belongs in a call of its own. To train the models in parallel instead, start one call per model, each on its own GPU.
 
+### Several seeds in one call
+
+`--seed` takes one or several values in both `train_topobench.py` and `train_mace.py`. The seeds are trained one after another, in the order given, and everything else stays the same:
+
+```bash
+python scripts/openqdc/train_topobench.py --dataset QM9 --model graph/gcn graph/gin --seed 0 1 2 3 4
+python scripts/openqdc/train_mace.py --dataset QM9 --seed 0 1 2 3 4
+nohup scripts/openqdc/sub_openqdc.sh topobench 1 --dataset QM9 --model graph/gcn --seed 0 1 2 > seeds_gcn.log 2>&1 &
+```
+
+- **What the seed changes.** The initialisation of the model and the order of the batches. It does **not** change the molecules, the split or the baseline: those depend on `--subsample-seed` and `--split-seed`, so the runs of different seeds are repetitions on the same data. For several splits use `--split-seed` (one call per value).
+- **Order with several models.** In `train_topobench.py` the models are the outer loop and the seeds the inner one: all seeds of the first model, then all seeds of the second, and so on. The summary at the end lists every run (`graph/gcn, seed 1: ok`), and the exit code is that of the first failure; a failing run does not stop the others.
+- **Run folders.** Each run has its own folder: TopoBench uses `logs/train/runs/<timestamp>_<pid>/`, and MACE puts the seed into the hash of the run name, so the folders differ (`..._split_v0.1_t0.1_s0_<hash>`). A name given with `--name` gets `_seed<N>` appended when several seeds are trained.
+- **W&B.** Each run is its own W&B run. A derived run name ends in `_seed<N>`, an explicit `--wandb-name exp` becomes `exp_seed<N>` (for TopoBench also `exp_<model>_seed<N>` with several models), and TopoBench adds a `seed<N>` tag. To compare the seeds of one setting, give them the same `--wandb-group`.
+- **Hydra override.** With several seeds, do not also pass `seed=` after `--` (TopoBench stops with a message); a single `--seed` is fine.
+- **In parallel.** The loop is sequential. To run seeds at the same time, start one call per seed (each with its own `nohup` log and, if you use GPUs, its own GPU).
+
 | Option | Default | Meaning |
 |---|---|---|
 | `--dataset` | required | OpenQDC dataset name, case-insensitive |
@@ -330,7 +347,7 @@ scripts/openqdc/sub_openqdc.sh topobench 3 --dataset QM9 --model graph/gcn graph
 | `--split-seed`, `--valid-fraction`, `--test-fraction` | from the yaml (0, 0.1, 0.1) | The shared split, see [Splits](#splits-identical-for-mace-and-topobench) |
 | `--epochs` | from the config | `trainer.max_epochs` |
 | `--batch-size` | 128 | Dataloader batch size |
-| `--seed` | from the config | Global seed |
+| `--seed` | from the config | Global seed(s): one or several (`--seed 0 1 2`), trained one after another ([below](#several-seeds-in-one-call)) |
 | `--logger` | `csv` | `csv`, `wandb`, `tensorboard`, ... |
 | `--loss` | `mse` (yaml `loss_type`) | Training loss: `mse` or `mae` ([details](#choosing-the-metric-and-the-loss)) |
 | `--monitor-metric` | `mae` (yaml `monitor_metric`) | Validation metric that picks the best checkpoint and stops training early: `mae`, `mse` or `rmse` |
@@ -438,7 +455,8 @@ python scripts/openqdc/train_mace.py --dataset Alchemy -- --num_channels=128 --m
 | `--patience` | 30 | Early stopping, in epochs |
 | `--r-max`, `--max-ell`, `--correlation`, `--num-interactions` | 5.0, 3, 3, 2 | Cutoff and model size |
 | `--hidden-irreps` | `64x0e + 64x1o` | Hidden representation |
-| `--dtype`, `--device`, `--seed` | float64, cuda if available, 0 | Numeric precision, device, seed |
+| `--dtype`, `--device` | float64, cuda if available | Numeric precision, device |
+| `--seed` | 0 | Seed(s) of the training: one or several (`--seed 0 1 2`), trained one after another ([below](#several-seeds-in-one-call)) |
 | `--loss` | `weighted` | Energy loss: `weighted`, `huber` or `l1l2energyforces` ([details](#choosing-the-metric-and-the-loss)) |
 | `--huber-delta` | 0.01 | Delta of the Huber loss |
 | `--error-table` | `TotalMAE` | Metric shown in the validation log lines and the final tables: `TotalMAE`, `PerAtomMAE`, `TotalRMSE`, `PerAtomRMSE` |

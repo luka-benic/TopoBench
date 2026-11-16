@@ -68,7 +68,16 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     p.add_argument(
         "--device", default="cuda" if torch.cuda.is_available() else "cpu"
     )
-    p.add_argument("--seed", type=int, default=0)
+    p.add_argument(
+        "--seed",
+        type=int,
+        nargs="+",
+        default=[0],
+        metavar="SEED",
+        help="seed(s) of the training (model initialisation, batch order); "
+        "several seeds are trained one after another, each in its own run "
+        "folder. The split does not change with it (see --split-seed).",
+    )
     p.add_argument(
         "--baseline",
         choices=["none", "per_element"],
@@ -204,19 +213,26 @@ def archive_old_checkpoints(work_dir: str, restarting: bool) -> None:
     print(f"Checkpoints of an earlier run moved to {target}")
 
 
-def main() -> None:
-    args, extra = parse_args()
-    extra = [a for a in extra if a != "--"]
-    args = resolve_energy_arg(args)
-    if args.baseline is None:
-        args.baseline = (
-            configured_loader_parameter(args.dataset, "baseline") or "none"
-        )
-    if args.baseline not in ("none", "per_element"):
-        raise SystemExit("baseline must be 'none' or 'per_element'.")
+def train_one(
+    args: argparse.Namespace,
+    extra: list[str],
+    paths: dict[str, str],
+    many_seeds: bool,
+) -> None:
+    """Train MACE once, for the seed in ``args.seed``, and save its results.
 
-    paths = ensure_export(args)
-
+    Parameters
+    ----------
+    args : argparse.Namespace
+        The arguments of the script, with ``seed`` set to one integer.
+    extra : list[str]
+        Extra ``mace_run_train`` options given after ``--``.
+    paths : dict[str, str]
+        Paths of the exported train/valid/test ``.xyz`` files.
+    many_seeds : bool
+        True when several seeds are trained in this call: an explicit
+        ``--name`` or ``--wandb-name`` then gets the seed appended.
+    """
     # Default run name: data settings (from the XYZ directory) plus a short hash
     # of the model/training settings, so runs that differ only in those never
     # share a folder.
@@ -253,6 +269,8 @@ def main() -> None:
     )
     digest = hashlib.sha1(settings.encode()).hexdigest()[:8]
     name = args.name or f"{os.path.basename(data_dir)}_{split_dir}_{digest}"
+    if args.name and many_seeds:
+        name = f"{args.name}_seed{args.seed}"  # one folder per seed
     work_dir = os.path.join(args.work_dir, name)
 
     # MACE is always started through run_mace_train.py with this interpreter, so
@@ -318,13 +336,16 @@ def main() -> None:
         # mace_run_train has no group/tag options; wandb reads these variables.
         if args.wandb_group:
             env["WANDB_RUN_GROUP"] = args.wandb_group
+        wandb_name = args.wandb_name or name
+        if args.wandb_name and many_seeds:
+            wandb_name = f"{args.wandb_name}_seed{args.seed}"
         tags = args.wandb_tags or [canonical_name(args.dataset), "MACE"]
         env["WANDB_TAGS"] = ",".join(tags)
         cmd += [
             "--wandb",
             f"--wandb_project={args.wandb_project}",
             f"--wandb_entity={args.wandb_entity}",
-            f"--wandb_name={args.wandb_name or name}",
+            f"--wandb_name={wandb_name}",
             f"--wandb_dir={os.path.abspath(work_dir)}",
             "--wandb_log_hypers",
             *[
@@ -388,6 +409,49 @@ def main() -> None:
                 )
     finally:
         lock.release()
+
+
+def main() -> None:
+    args, extra = parse_args()
+    extra = [a for a in extra if a != "--"]
+    args = resolve_energy_arg(args)
+    if args.baseline is None:
+        args.baseline = (
+            configured_loader_parameter(args.dataset, "baseline") or "none"
+        )
+    if args.baseline not in ("none", "per_element"):
+        raise SystemExit("baseline must be 'none' or 'per_element'.")
+
+    paths = ensure_export(args)
+
+    seeds = list(dict.fromkeys(args.seed))
+    results = []
+    for number, seed in enumerate(seeds, 1):
+        if len(seeds) > 1:
+            print(
+                f"\n===== seed {seed} ({number}/{len(seeds)}) =====",
+                flush=True,
+            )
+        run_args = argparse.Namespace(**{**vars(args), "seed": seed})
+        try:
+            train_one(run_args, extra, paths, len(seeds) > 1)
+            results.append((seed, 0))
+        except subprocess.CalledProcessError as error:
+            print(f"Seed {seed} failed (exit code {error.returncode}).")
+            results.append((seed, error.returncode))
+        except SystemExit as error:  # e.g. the run folder is in use
+            print(error.code if isinstance(error.code, str) else "")
+            results.append(
+                (seed, error.code if isinstance(error.code, int) else 1)
+            )
+    if len(seeds) > 1:
+        print("\nSummary:")
+        for seed, code in results:
+            status = "ok" if code == 0 else f"FAILED (exit code {code})"
+            print(f"  seed {seed}: {status}")
+    failed = [code for _, code in results if code]
+    if failed:
+        sys.exit(failed[0])
 
 
 if __name__ == "__main__":

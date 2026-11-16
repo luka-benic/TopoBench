@@ -127,3 +127,70 @@ def test_wandb_names_get_the_model_when_several_models_are_trained(
 def test_unknown_model_stops_before_anything_is_trained(script, monkeypatch):
     with pytest.raises(SystemExit, match="graph/nope"):
         run_main(script, monkeypatch, ["--model", "graph/gcn", "graph/nope"])
+
+
+def seed_of(cmd):
+    return next((a for a in cmd if a.startswith("seed=")), None)
+
+
+def test_seeds_are_trained_one_after_another_for_each_model(
+    script, monkeypatch
+):
+    commands = run_main(
+        script,
+        monkeypatch,
+        ["--model", "graph/gcn", "graph/gin", "--seed", "0", "1", "2"],
+    )
+    assert [(value_of(c, "model="), seed_of(c)) for c in commands] == [
+        ("graph/gcn", "seed=0"),
+        ("graph/gcn", "seed=1"),
+        ("graph/gcn", "seed=2"),
+        ("graph/gin", "seed=0"),
+        ("graph/gin", "seed=1"),
+        ("graph/gin", "seed=2"),
+    ]
+
+
+def test_without_seed_the_config_seed_is_used(script, monkeypatch):
+    assert seed_of(run_main(script, monkeypatch, [])[0]) is None
+    assert seed_of(run_main(script, monkeypatch, ["--seed", "5"])[0]) == (
+        "seed=5"
+    )
+
+
+def test_wandb_names_and_tags_carry_the_seed_when_several_are_trained(
+    script, monkeypatch
+):
+    derived = run_main(script, monkeypatch, ["--seed", "1", "2", "--wandb"])
+    names = [value_of(c, "+logger.wandb.name=") for c in derived]
+    assert names[0].endswith("_seed1") and names[1].endswith("_seed2")
+    assert "seed1" in value_of(derived[0], "logger.wandb.tags=")
+    explicit = run_main(
+        script,
+        monkeypatch,
+        ["--model", "graph/gcn", "--seed", "1", "2", "--wandb"]
+        + ["--wandb-name", "exp"],
+    )
+    assert [value_of(c, "+logger.wandb.name=") for c in explicit] == [
+        "exp_seed1",
+        "exp_seed2",
+    ]
+    single = run_main(
+        script, monkeypatch, ["--seed", "1", "--wandb", "--wandb-name", "exp"]
+    )
+    assert value_of(single[0], "+logger.wandb.name=") == "exp"
+
+
+def test_a_failing_seed_does_not_stop_the_others(script, monkeypatch):
+    with pytest.raises(SystemExit) as stop:
+        run_main(
+            script, monkeypatch, ["--seed", "0", "1", "2"], codes=[0, 4, 0]
+        )
+    assert stop.value.code == 4
+
+
+def test_several_seeds_cannot_be_combined_with_a_seed_override(
+    script, monkeypatch
+):
+    with pytest.raises(SystemExit, match="seed"):
+        run_main(script, monkeypatch, ["--seed", "0", "1", "--", "seed=3"])
