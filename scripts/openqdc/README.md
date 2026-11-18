@@ -321,10 +321,18 @@ scripts/openqdc/sub_openqdc.sh topobench 3 --dataset QM9 --model graph/gcn graph
 
 ```bash
 python scripts/openqdc/train_topobench.py --dataset QM9 --model graph/gcn graph/gin --seed 0 1 2 3 4
-python scripts/openqdc/train_mace.py --dataset QM9 --seed 0 1 2 3 4
+python scripts/openqdc/train_mace.py --dataset QM9 --seed 0      # MACE: one seed per call, see the warning below
 nohup scripts/openqdc/sub_openqdc.sh topobench 1 --dataset QM9 --model graph/gcn --seed 0 1 2 > seeds_gcn.log 2>&1 &
 ```
 
+- **MACE: use one seed per call.** Do not pass a list of seeds to `train_mace.py` (or to `sub_openqdc.sh mace`). If anything outside the training fails after one seed (for example the Weights & Biases upload of the test results, which can fail with `run ID ... is in use`), the exception is not caught, the whole call stops, and the remaining seeds are never run. A run takes hours, so that loses a lot. Start one call per seed instead, each with its own log file and, if possible, its own GPU (the seeds then also run at the same time):
+
+  ```bash
+  nohup scripts/openqdc/sub_openqdc.sh mace 4 --dataset Alchemy --wandb --wandb-name exp_seed300 --seed 300 > /scratch/$USER/logs/mace_seed300.log 2>&1 &
+  nohup scripts/openqdc/sub_openqdc.sh mace 5 --dataset Alchemy --wandb --wandb-name exp_seed400 --seed 400 > /scratch/$USER/logs/mace_seed400.log 2>&1 &
+  ```
+
+  With one seed the `--wandb-name` is used as given (no `_seed<N>` is added), so put the seed into the name yourself. A failed upload then only affects its own run; the run folder and `test_results/` are already saved. This is not needed for TopoBench, where a failed run does not stop the others.
 - **What the seed changes.** The initialisation of the model and the order of the batches. It does **not** change the molecules, the split or the baseline: those depend on `--subsample-seed` and `--split-seed`, so the runs of different seeds are repetitions on the same data. For several splits use `--split-seed` (one call per value).
 - **Order with several models.** In `train_topobench.py` the models are the outer loop and the seeds the inner one: all seeds of the first model, then all seeds of the second, and so on. The summary at the end lists every run (`graph/gcn, seed 1: ok`), and the exit code is that of the first failure; a failing run does not stop the others.
 - **Run folders.** Each run has its own folder: TopoBench uses `logs/train/runs/<timestamp>_<pid>/`, and MACE puts the seed into the hash of the run name, so the folders differ (`..._split_v0.1_t0.1_s0_<hash>`). A name given with `--name` gets `_seed<N>` appended when several seeds are trained.
@@ -456,7 +464,7 @@ python scripts/openqdc/train_mace.py --dataset Alchemy -- --num_channels=128 --m
 | `--r-max`, `--max-ell`, `--correlation`, `--num-interactions` | 5.0, 3, 3, 2 | Cutoff and model size |
 | `--hidden-irreps` | `64x0e + 64x1o` | Hidden representation |
 | `--dtype`, `--device` | float64, cuda if available | Numeric precision, device |
-| `--seed` | 0 | Seed(s) of the training: one or several (`--seed 0 1 2`), trained one after another ([below](#several-seeds-in-one-call)) |
+| `--seed` | 0 | Seed of the training. Use **one seed per call** for MACE (a list is accepted but one failure after a seed ends the whole call, see [Several seeds in one call](#several-seeds-in-one-call)) |
 | `--loss` | `weighted` | Energy loss: `weighted`, `huber` or `l1l2energyforces` ([details](#choosing-the-metric-and-the-loss)) |
 | `--huber-delta` | 0.01 | Delta of the Huber loss |
 | `--error-table` | `TotalMAE` | Metric shown in the validation log lines and the final tables: `TotalMAE`, `PerAtomMAE`, `TotalRMSE`, `PerAtomRMSE` |
@@ -841,6 +849,8 @@ nohup scripts/openqdc/sub_openqdc.sh mace 2 --dataset QM9 > mace_qm9.log 2>&1 &
 
 tail -f topobench_qm9.log                    # follow a run
 ```
+
+For several seeds start one command per seed (different GPUs, one log file each) and give each a `--wandb-name` that contains the seed. **For MACE, never use `--seed 100 200 300 ...`**: one failure after a seed stops the whole call (see [Several seeds in one call](#several-seeds-in-one-call)).
 
 Keep the `.log` files of `nohup` somewhere with space (they can be long); `/scratch/$USER/logs/` is a good place: `> /scratch/$USER/logs/mace_qm9.log`.
 
